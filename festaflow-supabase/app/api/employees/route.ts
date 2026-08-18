@@ -1,18 +1,31 @@
 import { prisma } from "@/lib/prisma";
-import { requireUser } from "@/lib/auth";
+import { requireAuth, resolveBranchIdForCreate, handleAuthzError } from "@/lib/authz";
 import { employeeSchema } from "@/lib/validators";
 import { fail, ok, serialize } from "@/lib/json";
 
 export async function GET() {
-  await requireUser();
-  const data = await prisma.employee.findMany({ where: { deletedAt: null }, orderBy: { name: "asc" } });
-  return ok(serialize(data));
+  try {
+    const auth = await requireAuth();
+    const data = await prisma.employee.findMany({
+      where: { deletedAt: null, branchId: { in: auth.branchIds } },
+      orderBy: { name: "asc" },
+    });
+    return ok(serialize(data));
+  } catch (error) {
+    return handleAuthzError(error);
+  }
 }
 
 export async function POST(request: Request) {
-  await requireUser();
-  const parsed = employeeSchema.safeParse(await request.json());
-  if (!parsed.success) return fail("Funcionario invalido.", 422);
-  const data = await prisma.employee.create({ data: parsed.data });
-  return ok(serialize(data), 201);
+  try {
+    const auth = await requireAuth();
+    const parsed = employeeSchema.safeParse(await request.json());
+    if (!parsed.success) return fail("Funcionario invalido.", 422);
+    const branchId = resolveBranchIdForCreate(auth, parsed.data.branchId);
+    const { branchId: _branchId, ...rest } = parsed.data;
+    const data = await prisma.employee.create({ data: { ...rest, branchId } });
+    return ok(serialize(data), 201);
+  } catch (error) {
+    return handleAuthzError(error);
+  }
 }
