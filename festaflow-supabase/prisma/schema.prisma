@@ -32,6 +32,41 @@ enum PaymentStatus {
   pendente
 }
 
+model Branch {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name      String   @unique @db.VarChar(120)
+  city      String   @db.VarChar(120)
+  state     String   @db.VarChar(2)
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  userBranches UserBranch[]
+  clients      Client[]
+  employees    Employee[]
+  services     Service[]
+  orders       ServiceOrder[]
+  transactions Transaction[]
+
+  @@map("branches")
+}
+
+// Junção usuário<->filial. Um usuário (Profile) pode ter acesso a uma ou mais
+// filiais; ADMIN com acesso a "todas as filiais" ainda precisa de uma linha
+// por filial aqui (nunca inferir acesso total a partir do role sozinho).
+model UserBranch {
+  userId    String   @map("user_id") @db.Uuid
+  branchId  String   @map("branch_id") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  profile Profile @relation(fields: [userId], references: [id], onDelete: Cascade)
+  branch  Branch  @relation(fields: [branchId], references: [id], onDelete: Cascade)
+
+  @@id([userId, branchId])
+  @@index([branchId], map: "idx_user_branches_branch_id")
+  @@map("user_branches")
+}
+
 model Profile {
   id         String    @id @db.Uuid
   name       String    @db.VarChar(180)
@@ -42,12 +77,16 @@ model Profile {
   updatedAt  DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
   deletedAt  DateTime? @map("deleted_at") @db.Timestamptz(6)
 
+  branches      UserBranch[]
+  createdOrders ServiceOrder[] @relation("ServiceOrderCreatedBy")
+
   @@index([email], map: "idx_profiles_email")
   @@map("profiles")
 }
 
 model Client {
   id          String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  branchId    String         @map("branch_id") @db.Uuid
   name        String         @db.VarChar(180)
   email       String?        @db.VarChar(180)
   phone       String?        @db.VarChar(40)
@@ -57,17 +96,20 @@ model Client {
   createdAt   DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt   DateTime       @updatedAt @map("updated_at") @db.Timestamptz(6)
   deletedAt   DateTime?      @map("deleted_at") @db.Timestamptz(6)
+  branch      Branch         @relation(fields: [branchId], references: [id], onDelete: Restrict)
   orders      ServiceOrder[]
 
   @@index([name], map: "idx_clients_name")
   @@index([email], map: "idx_clients_email")
   @@index([phone], map: "idx_clients_phone")
   @@index([document], map: "idx_clients_document")
+  @@index([branchId], map: "idx_clients_branch_id")
   @@map("clients")
 }
 
 model Employee {
   id            String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  branchId      String         @map("branch_id") @db.Uuid
   name          String         @db.VarChar(180)
   role          String         @db.VarChar(120)
   phone         String?        @db.VarChar(40)
@@ -77,15 +119,18 @@ model Employee {
   createdAt     DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt     DateTime       @updatedAt @map("updated_at") @db.Timestamptz(6)
   deletedAt     DateTime?      @map("deleted_at") @db.Timestamptz(6)
+  branch        Branch         @relation(fields: [branchId], references: [id], onDelete: Restrict)
   orders        OrderEmployee[]
 
   @@index([name], map: "idx_employees_name")
   @@index([phone], map: "idx_employees_phone")
+  @@index([branchId], map: "idx_employees_branch_id")
   @@map("employees")
 }
 
 model Service {
   id            String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  branchId      String             @map("branch_id") @db.Uuid
   name          String             @db.VarChar(180)
   description   String?            @db.Text
   price         Decimal            @db.Decimal(10, 2)
@@ -95,15 +140,18 @@ model Service {
   createdAt     DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt     DateTime           @updatedAt @map("updated_at") @db.Timestamptz(6)
   deletedAt     DateTime?          @map("deleted_at") @db.Timestamptz(6)
+  branch        Branch             @relation(fields: [branchId], references: [id], onDelete: Restrict)
   orderItems    ServiceOrderItem[]
 
   @@index([name], map: "idx_services_name")
   @@index([category], map: "idx_services_category")
+  @@index([branchId], map: "idx_services_branch_id")
   @@map("services")
 }
 
 model ServiceOrder {
   id            String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  branchId      String              @map("branch_id") @db.Uuid
   code          String              @unique @db.VarChar(40)
   clientId      String              @map("client_id") @db.Uuid
   eventDate     DateTime            @map("event_date") @db.Timestamptz(6)
@@ -116,10 +164,13 @@ model ServiceOrder {
   signatureName String?             @map("signature_name") @db.VarChar(180)
   signatureDate DateTime?           @map("signature_date") @db.Timestamptz(6)
   totalAmount   Decimal             @default(0) @map("total_amount") @db.Decimal(10, 2)
+  createdBy     String?             @map("created_by") @db.Uuid
   createdAt     DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt     DateTime            @updatedAt @map("updated_at") @db.Timestamptz(6)
   deletedAt     DateTime?           @map("deleted_at") @db.Timestamptz(6)
+  branch        Branch              @relation(fields: [branchId], references: [id], onDelete: Restrict)
   client        Client              @relation(fields: [clientId], references: [id], onDelete: Restrict)
+  createdByProfile Profile?         @relation("ServiceOrderCreatedBy", fields: [createdBy], references: [id], onDelete: SetNull)
   items         ServiceOrderItem[]
   employees     OrderEmployee[]
   attachments   Attachment[]
@@ -128,6 +179,7 @@ model ServiceOrder {
   @@index([clientId], map: "idx_service_orders_client_id")
   @@index([eventDate], map: "idx_service_orders_event_date")
   @@index([status], map: "idx_service_orders_status")
+  @@index([branchId], map: "idx_service_orders_branch_id")
   @@map("service_orders")
 }
 
@@ -176,6 +228,7 @@ model Attachment {
 
 model Transaction {
   id          String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  branchId    String          @map("branch_id") @db.Uuid
   type        TransactionType
   category    String          @db.VarChar(120)
   description String          @db.Text
@@ -187,11 +240,13 @@ model Transaction {
   createdAt   DateTime        @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt   DateTime        @updatedAt @map("updated_at") @db.Timestamptz(6)
   deletedAt   DateTime?       @map("deleted_at") @db.Timestamptz(6)
+  branch      Branch          @relation(fields: [branchId], references: [id], onDelete: Restrict)
   order       ServiceOrder?   @relation(fields: [orderId], references: [id], onDelete: SetNull)
 
   @@index([type], map: "idx_transactions_type")
   @@index([status], map: "idx_transactions_status")
   @@index([dueDate], map: "idx_transactions_due_date")
   @@index([orderId], map: "idx_transactions_order_id")
+  @@index([branchId], map: "idx_transactions_branch_id")
   @@map("transactions")
 }

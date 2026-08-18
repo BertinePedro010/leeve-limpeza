@@ -4,5 +4,6 @@ release/
 out/
 dist/
 *.log
+*.tsbuildinfo
 .env*.local
 !.env.local.example
