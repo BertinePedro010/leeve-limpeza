@@ -1,0 +1,17 @@
+import { FormEvent, useState } from "react";
+import { Modal } from "../components/Modal";
+import { useCrud } from "../hooks/useCrud";
+import { Employee } from "../types";
+
+const empty = { nome: "", cargo: "", telefone: "", valorDiaria: 0, tipoPagamento: "diaria", observacoes: "" };
+
+export function EmployeesPage() {
+  const { items, create, update, remove } = useCrud<Employee, typeof empty>("employees");
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [form, setForm] = useState(empty);
+  const [editing, setEditing] = useState<Employee | null>(null);
+  const list = items.filter((e) => `${e.nome} ${e.cargo}`.toLowerCase().includes(query.toLowerCase()));
+  async function submit(e: FormEvent) { e.preventDefault(); editing ? await update(editing.id, form) : await create(form); setOpen(false); setEditing(null); setForm(empty); }
+  return <div className="space-y-5"><div className="flex gap-4"><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Buscar funcionario..." className="w-full rounded-xl border px-4 py-2" /><button onClick={() => { setOpen(true); setEditing(null); setForm(empty); }} className="rounded-xl bg-indigo-600 px-4 py-2 font-bold text-white">Novo</button></div><div className="grid gap-4 md:grid-cols-3">{list.map((e) => <div key={e.id} className="rounded-2xl border bg-white p-5 shadow-sm"><h3 className="font-black">{e.nome}</h3><p className="text-sm font-bold text-indigo-600">{e.cargo}</p><p className="mt-2 text-sm text-slate-500">{e.telefone}</p><p className="text-sm text-slate-700">R$ {Number(e.valorDiaria).toFixed(2)} / {e.tipoPagamento}</p><p className="mt-3 text-xs text-slate-500">{e.observacoes}</p><div className="mt-4 flex gap-2"><button onClick={() => { setEditing(e); setForm({ nome: e.nome, cargo: e.cargo, telefone: e.telefone || "", valorDiaria: Number(e.valorDiaria), tipoPagamento: e.tipoPagamento, observacoes: e.observacoes || "" }); setOpen(true); }} className="text-sm font-bold text-indigo-600">Editar</button><button onClick={() => confirm("Excluir funcionario?") && remove(e.id)} className="text-sm font-bold text-rose-600">Excluir</button></div></div>)}</div>{open && <Modal title={editing ? "Editar funcionario" : "Novo funcionario"} onClose={() => setOpen(false)}><form onSubmit={submit} className="grid gap-3"><input required placeholder="Nome" value={form.nome} onChange={(ev) => setForm({ ...form, nome: ev.target.value })} className="rounded-xl border p-3" /><input required placeholder="Cargo" value={form.cargo} onChange={(ev) => setForm({ ...form, cargo: ev.target.value })} className="rounded-xl border p-3" /><input placeholder="Telefone" value={form.telefone} onChange={(ev) => setForm({ ...form, telefone: ev.target.value })} className="rounded-xl border p-3" /><input type="number" placeholder="Valor" value={form.valorDiaria} onChange={(ev) => setForm({ ...form, valorDiaria: Number(ev.target.value) })} className="rounded-xl border p-3" /><select value={form.tipoPagamento} onChange={(ev) => setForm({ ...form, tipoPagamento: ev.target.value })} className="rounded-xl border p-3"><option value="diaria">Diaria</option><option value="salario">Salario</option></select><textarea placeholder="Observacoes" value={form.observacoes} onChange={(ev) => setForm({ ...form, observacoes: ev.target.value })} className="rounded-xl border p-3" /><button className="rounded-xl bg-indigo-600 p-3 font-bold text-white">Salvar</button></form></Modal>}</div>;
+}

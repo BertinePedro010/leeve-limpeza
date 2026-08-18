@@ -1,0 +1,17 @@
+import { FormEvent, useState } from "react";
+import { Modal } from "../components/Modal";
+import { useCrud } from "../hooks/useCrud";
+import { Client } from "../types";
+
+const empty = { nome: "", email: "", telefone: "", documento: "", endereco: "", observacoes: "" };
+
+export function ClientsPage() {
+  const { items, create, update, remove, loading } = useCrud<Client, typeof empty>("clients");
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [form, setForm] = useState(empty);
+  const [editing, setEditing] = useState<Client | null>(null);
+  const list = items.filter((c) => `${c.nome} ${c.email} ${c.documento}`.toLowerCase().includes(query.toLowerCase()));
+  async function submit(e: FormEvent) { e.preventDefault(); editing ? await update(editing.id, form) : await create(form); setOpen(false); setEditing(null); setForm(empty); }
+  return <div className="space-y-5"><div className="flex justify-between gap-4"><input placeholder="Buscar cliente..." value={query} onChange={(e) => setQuery(e.target.value)} className="w-full rounded-xl border border-slate-200 px-4 py-2" /><button onClick={() => { setOpen(true); setEditing(null); setForm(empty); }} className="rounded-xl bg-indigo-600 px-4 py-2 font-bold text-white">Novo cliente</button></div><div className="grid gap-4 md:grid-cols-2">{loading ? "Carregando..." : list.map((c) => <div key={c.id} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><div className="flex justify-between"><h3 className="font-black">{c.nome}</h3><div><button onClick={() => { setEditing(c); setForm({ nome: c.nome, email: c.email || "", telefone: c.telefone || "", documento: c.documento || "", endereco: c.endereco || "", observacoes: c.observacoes || "" }); setOpen(true); }} className="mr-2 text-sm font-bold text-indigo-600">Editar</button><button onClick={() => confirm("Excluir cliente?") && remove(c.id)} className="text-sm font-bold text-rose-600">Excluir</button></div></div><p className="mt-2 text-sm text-slate-500">{c.telefone} | {c.email}</p><p className="text-sm text-slate-500">{c.documento}</p><p className="mt-2 text-xs text-slate-400">{c.endereco}</p><p className="mt-3 rounded-xl bg-slate-50 p-3 text-xs text-slate-500">{c.observacoes || "Sem observacoes"}</p></div>)}</div>{open && <Modal title={editing ? "Editar cliente" : "Novo cliente"} onClose={() => { setOpen(false); setEditing(null); setForm(empty); }}><form onSubmit={submit} className="grid gap-3"><input required placeholder="Nome" value={form.nome} onChange={(e) => setForm({ ...form, nome: e.target.value })} className="rounded-xl border p-3" /><input placeholder="Email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} className="rounded-xl border p-3" /><input placeholder="Telefone" value={form.telefone} onChange={(e) => setForm({ ...form, telefone: e.target.value })} className="rounded-xl border p-3" /><input placeholder="CPF/CNPJ" value={form.documento} onChange={(e) => setForm({ ...form, documento: e.target.value })} className="rounded-xl border p-3" /><input placeholder="Endereco" value={form.endereco} onChange={(e) => setForm({ ...form, endereco: e.target.value })} className="rounded-xl border p-3" /><textarea placeholder="Observacoes" value={form.observacoes} onChange={(e) => setForm({ ...form, observacoes: e.target.value })} className="rounded-xl border p-3" /><button className="rounded-xl bg-indigo-600 p-3 font-bold text-white">Salvar</button></form></Modal>}</div>;
+}

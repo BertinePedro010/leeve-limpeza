@@ -1,0 +1,7 @@
+@import "tailwindcss";
+
+body { margin: 0; background: #f8fafc; }
+@media print {
+  .no-print { display: none !important; }
+  .print-page { box-shadow: none !important; border: 0 !important; }
+}

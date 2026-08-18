@@ -1,0 +1,26 @@
+appId: br.com.festaflow.supabase
+productName: FestaFlow Supabase
+directories:
+  output: release
+files:
+  - electron/**
+  - .next/standalone/**
+  - .next/static/**
+  - public/**
+extraResources:
+  - from: .next/standalone
+    to: app
+  - from: .next/static
+    to: app/.next/static
+  - from: public
+    to: app/public
+win:
+  target:
+    - nsis
+  artifactName: FestaFlow-Supabase-Setup-${version}.${ext}
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true

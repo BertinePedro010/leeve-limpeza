@@ -1,0 +1,197 @@
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum UserRole {
+  admin
+  operador
+  funcionario
+}
+
+enum OsStatus {
+  pendente
+  confirmado
+  em_andamento
+  finalizado
+  cancelado
+}
+
+enum TransactionType {
+  receita
+  despesa
+}
+
+enum PaymentStatus {
+  pago
+  pendente
+}
+
+model Profile {
+  id         String    @id @db.Uuid
+  name       String    @db.VarChar(180)
+  email      String    @unique @db.VarChar(180)
+  role       UserRole  @default(operador)
+  avatarUrl  String?   @map("avatar_url") @db.Text
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt  DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  deletedAt  DateTime? @map("deleted_at") @db.Timestamptz(6)
+
+  @@index([email], map: "idx_profiles_email")
+  @@map("profiles")
+}
+
+model Client {
+  id          String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name        String         @db.VarChar(180)
+  email       String?        @db.VarChar(180)
+  phone       String?        @db.VarChar(40)
+  document    String?        @unique @db.VarChar(40)
+  address     String?        @db.Text
+  notes       String?        @db.Text
+  createdAt   DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime       @updatedAt @map("updated_at") @db.Timestamptz(6)
+  deletedAt   DateTime?      @map("deleted_at") @db.Timestamptz(6)
+  orders      ServiceOrder[]
+
+  @@index([name], map: "idx_clients_name")
+  @@index([email], map: "idx_clients_email")
+  @@index([phone], map: "idx_clients_phone")
+  @@index([document], map: "idx_clients_document")
+  @@map("clients")
+}
+
+model Employee {
+  id            String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name          String         @db.VarChar(180)
+  role          String         @db.VarChar(120)
+  phone         String?        @db.VarChar(40)
+  dailyRate     Decimal        @map("daily_rate") @db.Decimal(10, 2)
+  paymentType   String         @default("diaria") @map("payment_type") @db.VarChar(30)
+  notes         String?        @db.Text
+  createdAt     DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime       @updatedAt @map("updated_at") @db.Timestamptz(6)
+  deletedAt     DateTime?      @map("deleted_at") @db.Timestamptz(6)
+  orders        OrderEmployee[]
+
+  @@index([name], map: "idx_employees_name")
+  @@index([phone], map: "idx_employees_phone")
+  @@map("employees")
+}
+
+model Service {
+  id            String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name          String             @db.VarChar(180)
+  description   String?            @db.Text
+  price         Decimal            @db.Decimal(10, 2)
+  durationHours Decimal            @map("duration_hours") @db.Decimal(5, 2)
+  category      String             @db.VarChar(120)
+  active        Boolean            @default(true)
+  createdAt     DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime           @updatedAt @map("updated_at") @db.Timestamptz(6)
+  deletedAt     DateTime?          @map("deleted_at") @db.Timestamptz(6)
+  orderItems    ServiceOrderItem[]
+
+  @@index([name], map: "idx_services_name")
+  @@index([category], map: "idx_services_category")
+  @@map("services")
+}
+
+model ServiceOrder {
+  id            String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  code          String              @unique @db.VarChar(40)
+  clientId      String              @map("client_id") @db.Uuid
+  eventDate     DateTime            @map("event_date") @db.Timestamptz(6)
+  startTime     String              @map("start_time") @db.VarChar(10)
+  endTime       String              @map("end_time") @db.VarChar(10)
+  location      String              @db.Text
+  status        OsStatus            @default(pendente)
+  paymentMethod String?             @map("payment_method") @db.VarChar(160)
+  notes         String?             @db.Text
+  signatureName String?             @map("signature_name") @db.VarChar(180)
+  signatureDate DateTime?           @map("signature_date") @db.Timestamptz(6)
+  totalAmount   Decimal             @default(0) @map("total_amount") @db.Decimal(10, 2)
+  createdAt     DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime            @updatedAt @map("updated_at") @db.Timestamptz(6)
+  deletedAt     DateTime?           @map("deleted_at") @db.Timestamptz(6)
+  client        Client              @relation(fields: [clientId], references: [id], onDelete: Restrict)
+  items         ServiceOrderItem[]
+  employees     OrderEmployee[]
+  attachments   Attachment[]
+  transactions  Transaction[]
+
+  @@index([clientId], map: "idx_service_orders_client_id")
+  @@index([eventDate], map: "idx_service_orders_event_date")
+  @@index([status], map: "idx_service_orders_status")
+  @@map("service_orders")
+}
+
+model ServiceOrderItem {
+  id          String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orderId     String       @map("order_id") @db.Uuid
+  serviceId   String       @map("service_id") @db.Uuid
+  quantity    Int          @default(1)
+  unitPrice   Decimal      @map("unit_price") @db.Decimal(10, 2)
+  createdAt   DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime     @updatedAt @map("updated_at") @db.Timestamptz(6)
+  order       ServiceOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  service     Service      @relation(fields: [serviceId], references: [id], onDelete: Restrict)
+
+  @@index([orderId], map: "idx_service_order_items_order_id")
+  @@index([serviceId], map: "idx_service_order_items_service_id")
+  @@map("service_order_items")
+}
+
+model OrderEmployee {
+  orderId    String       @map("order_id") @db.Uuid
+  employeeId String       @map("employee_id") @db.Uuid
+  createdAt  DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+  order      ServiceOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  employee   Employee     @relation(fields: [employeeId], references: [id], onDelete: Restrict)
+
+  @@id([orderId, employeeId])
+  @@index([orderId], map: "idx_order_employees_order_id")
+  @@index([employeeId], map: "idx_order_employees_employee_id")
+  @@map("order_employees")
+}
+
+model Attachment {
+  id        String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orderId   String       @map("order_id") @db.Uuid
+  fileName  String       @map("file_name") @db.VarChar(220)
+  fileUrl   String       @map("file_url") @db.Text
+  mimeType  String?      @map("mime_type") @db.VarChar(120)
+  createdAt DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+  deletedAt DateTime?    @map("deleted_at") @db.Timestamptz(6)
+  order     ServiceOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId], map: "idx_attachments_order_id")
+  @@map("attachments")
+}
+
+model Transaction {
+  id          String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  type        TransactionType
+  category    String          @db.VarChar(120)
+  description String          @db.Text
+  amount      Decimal         @db.Decimal(10, 2)
+  dueDate     DateTime        @map("due_date") @db.Timestamptz(6)
+  paidAt      DateTime?       @map("paid_at") @db.Timestamptz(6)
+  status      PaymentStatus   @default(pendente)
+  orderId     String?         @map("order_id") @db.Uuid
+  createdAt   DateTime        @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime        @updatedAt @map("updated_at") @db.Timestamptz(6)
+  deletedAt   DateTime?       @map("deleted_at") @db.Timestamptz(6)
+  order       ServiceOrder?   @relation(fields: [orderId], references: [id], onDelete: SetNull)
+
+  @@index([type], map: "idx_transactions_type")
+  @@index([status], map: "idx_transactions_status")
+  @@index([dueDate], map: "idx_transactions_due_date")
+  @@index([orderId], map: "idx_transactions_order_id")
+  @@map("transactions")
+}

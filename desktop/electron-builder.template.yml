@@ -1,0 +1,19 @@
+appId: br.com.festaflow.desktop
+productName: FestaFlow
+directories:
+  output: release
+files:
+  - dist/**
+  - desktop/**
+extraMetadata:
+  main: desktop/main.cjs
+win:
+  target:
+    - nsis
+  artifactName: FestaFlow-Setup-${version}.${ext}
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true

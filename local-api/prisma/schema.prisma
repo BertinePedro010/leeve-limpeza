@@ -1,0 +1,111 @@
+datasource db {
+  provider = "sqlserver"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum Role {
+  ADMIN
+  OPERADOR
+  FUNCIONARIO
+}
+
+enum OSStatus {
+  PENDENTE
+  CONFIRMADO
+  EM_ANDAMENTO
+  FINALIZADO
+  CANCELADO
+}
+
+model User {
+  id           String   @id @default(uuid())
+  name         String
+  email        String   @unique
+  passwordHash String
+  role         Role     @default(OPERADOR)
+  createdAt    DateTime @default(now())
+}
+
+model Client {
+  id          String         @id @default(uuid())
+  nome        String
+  email       String?
+  telefone    String?
+  documento   String?
+  endereco    String?
+  observacoes String?        @db.NVarChar(Max)
+  createdAt   DateTime       @default(now())
+  orders      ServiceOrder[]
+}
+
+model Employee {
+  id            String         @id @default(uuid())
+  nome          String
+  cargo         String
+  telefone      String?
+  valorDiaria   Decimal        @db.Decimal(10, 2)
+  tipoPagamento String         @default("diaria")
+  observacoes   String?        @db.NVarChar(Max)
+  createdAt     DateTime       @default(now())
+  orders        ServiceOrder[] @relation("EmployeeOrders")
+}
+
+model Service {
+  id           String             @id @default(uuid())
+  nome         String
+  descricao    String?            @db.NVarChar(Max)
+  valor        Decimal            @db.Decimal(10, 2)
+  duracaoHoras Decimal            @db.Decimal(5, 2)
+  categoria    String
+  status       String             @default("ativo")
+  items        ServiceOrderItem[]
+}
+
+model ServiceOrder {
+  id             String             @id @default(uuid())
+  codigo         String             @unique
+  clienteId      String
+  cliente        Client             @relation(fields: [clienteId], references: [id])
+  dataEvento     DateTime
+  horarioInicio  String
+  horarioFim     String
+  local          String
+  status         OSStatus           @default(PENDENTE)
+  formaPagamento String?
+  observacoes    String?            @db.NVarChar(Max)
+  assinaturaNome String?
+  assinaturaData DateTime?
+  anexos         String?            @db.NVarChar(Max)
+  valorTotal     Decimal            @db.Decimal(10, 2)
+  createdAt      DateTime           @default(now())
+  itens          ServiceOrderItem[]
+  funcionarios   Employee[]         @relation("EmployeeOrders")
+  transactions   Transaction[]
+}
+
+model ServiceOrderItem {
+  id            String       @id @default(uuid())
+  orderId       String
+  order         ServiceOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  serviceId     String
+  service       Service      @relation(fields: [serviceId], references: [id])
+  quantidade    Int
+  valorUnitario Decimal      @db.Decimal(10, 2)
+}
+
+model Transaction {
+  id        String        @id @default(uuid())
+  tipo      String
+  categoria String
+  descricao String
+  valor     Decimal       @db.Decimal(10, 2)
+  data      DateTime
+  status    String        @default("pendente")
+  osId      String?
+  order     ServiceOrder? @relation(fields: [osId], references: [id], onDelete: SetNull)
+  createdAt DateTime      @default(now())
+}

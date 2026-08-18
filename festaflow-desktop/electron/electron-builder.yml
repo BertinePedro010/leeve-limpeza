@@ -1,0 +1,24 @@
+appId: br.com.festaflow.desktop
+productName: FestaFlow
+directories:
+  output: release
+files:
+  - frontend/dist/**
+  - electron/**
+extraResources:
+  - from: backend/dist
+    to: backend/dist
+  - from: backend/prisma
+    to: backend/prisma
+  - from: backend/node_modules
+    to: backend/node_modules
+win:
+  target:
+    - nsis
+  artifactName: FestaFlow-Setup-${version}.${ext}
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
