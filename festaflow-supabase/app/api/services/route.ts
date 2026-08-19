@@ -1,13 +1,14 @@
 import { prisma } from "@/lib/prisma";
-import { requireAuth, resolveBranchIdForCreate, handleAuthzError } from "@/lib/authz";
+import { requireAuth, resolveBranchIdForCreate, resolveBranchFilter, handleAuthzError } from "@/lib/authz";
 import { serviceSchema } from "@/lib/validators";
 import { fail, ok, serialize } from "@/lib/json";
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
     const auth = await requireAuth();
+    const branchId = new URL(request.url).searchParams.get("branchId");
     const data = await prisma.service.findMany({
-      where: { deletedAt: null, branchId: { in: auth.branchIds } },
+      where: { deletedAt: null, branchId: resolveBranchFilter(auth, branchId) },
       orderBy: [{ category: "asc" }, { name: "asc" }],
     });
     return ok(serialize(data));

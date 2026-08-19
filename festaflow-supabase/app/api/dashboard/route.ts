@@ -1,11 +1,12 @@
 import { prisma } from "@/lib/prisma";
-import { requireAuth, handleAuthzError } from "@/lib/authz";
+import { requireAuth, resolveBranchFilter, handleAuthzError } from "@/lib/authz";
 import { ok, serialize } from "@/lib/json";
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
     const auth = await requireAuth();
-    const branchFilter = { branchId: { in: auth.branchIds } };
+    const branchId = new URL(request.url).searchParams.get("branchId");
+    const branchFilter = { branchId: resolveBranchFilter(auth, branchId) };
     const [orders, clients, employees, services, transactions] = await Promise.all([
       prisma.serviceOrder.findMany({ where: { deletedAt: null, ...branchFilter }, include: { client: true } }),
       prisma.client.count({ where: { deletedAt: null, ...branchFilter } }),

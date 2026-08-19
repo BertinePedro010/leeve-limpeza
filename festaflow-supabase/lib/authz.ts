@@ -58,6 +58,22 @@ export function assertBranchAccess(auth: AuthContext, branchId: string): void {
 }
 
 /**
+ * Resolves the branch_id filter for a list/read endpoint from the frontend's
+ * "active branch" intent. The requested id is only ever used after being
+ * validated against the user's own user_branches rows — it is never trusted
+ * on its own. Omitted/invalid input falls back to every branch the user is
+ * authorized for (prior default behavior), never to "all branches" in the
+ * database sense.
+ */
+export function resolveBranchFilter(auth: AuthContext, requested?: string | null): { in: string[] } {
+  if (requested) {
+    assertBranchAccess(auth, requested);
+    return { in: [requested] };
+  }
+  return { in: auth.branchIds };
+}
+
+/**
  * Resolves the branchId for a new record without ever guessing a default.
  * - If the client sent one, it must be one of the user's authorized branches.
  * - If omitted and the user has exactly one authorized branch, that one is used
