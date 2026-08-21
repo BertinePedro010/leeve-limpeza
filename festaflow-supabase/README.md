@@ -1,4 +1,4 @@
-# FestaFlow Supabase PostgreSQL
+# LeeveLimpeza — Supabase PostgreSQL
 
 Projeto Next.js + Prisma + Supabase Auth + Supabase PostgreSQL + Electron.
 

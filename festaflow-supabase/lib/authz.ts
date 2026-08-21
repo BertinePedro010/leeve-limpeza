@@ -114,3 +114,18 @@ export function handleAuthzError(error: unknown) {
   if (error instanceof AuthzError) return fail(error.message, error.status);
   throw error;
 }
+
+/**
+ * "Administrador global" is not a separate role — it is an admin whose
+ * user_branches rows cover every currently active branch. Never inferred
+ * from role alone (same principle as the rest of this file): an admin with
+ * access to only one branch is a branch admin, not a global admin.
+ */
+export async function requireGlobalAdmin(auth: AuthContext): Promise<void> {
+  requireRole(auth, "admin");
+  const activeBranchCount = await prisma.branch.count({ where: { active: true } });
+  const hasAllBranches = activeBranchCount > 0 && auth.branchIds.length >= activeBranchCount;
+  if (!hasAllBranches) {
+    throw new AuthzError("Acao restrita ao administrador global (acesso a todas as filiais).", 403);
+  }
+}

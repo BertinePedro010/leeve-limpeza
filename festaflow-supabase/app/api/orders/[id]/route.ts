@@ -1,13 +1,29 @@
 import { prisma } from "@/lib/prisma";
 import { requireAuth, assertRecordBranchAccess, assertBranchAccess, AuthzError, handleAuthzError } from "@/lib/authz";
 import { orderSchema } from "@/lib/validators";
+import { syncOrderBilling } from "@/lib/billing";
 import { fail, ok, serialize } from "@/lib/json";
 
 function total(items: Array<{ quantity: number; unitPrice: number }>) {
   return items.reduce((sum, item) => sum + item.quantity * Number(item.unitPrice), 0);
 }
 
-const include = { client: true, items: { include: { service: true } }, employees: { include: { employee: true } }, attachments: true, transactions: true };
+const include = { client: true, branch: { select: { id: true, name: true, city: true } }, items: { include: { service: true } }, employees: { include: { employee: true } }, attachments: true, transactions: true, appointments: { include: { employee: { select: { id: true, name: true } } }, orderBy: [{ date: "asc" as const }, { startTime: "asc" as const }] } };
+
+// Used by the calendar (click an appointment -> load its full order) and by
+// Financeiro's "ver detalhes" action - the one place both features fetch a
+// single order's full data from, so neither builds its own parallel query.
+export async function GET(_request: Request, { params }: { params: Promise<{ id: string }> }) {
+  try {
+    const auth = await requireAuth();
+    const { id } = await params;
+    const order = await prisma.serviceOrder.findUnique({ where: { id, deletedAt: null }, include });
+    assertRecordBranchAccess(auth, order, "OS nao encontrada.");
+    return ok(serialize(order));
+  } catch (error) {
+    return handleAuthzError(error);
+  }
+}
 
 async function assertSameBranchRelations(
   branchId: string,
@@ -41,23 +57,38 @@ export async function PUT(request: Request, { params }: { params: Promise<{ id: 
     if (!parsed.success) return fail("OS invalida.", 422);
     const branchId = parsed.data.branchId ?? existing.branchId;
     if (branchId !== existing.branchId) assertBranchAccess(auth, branchId);
-    const { items, employeeIds, branchId: _branchId, ...body } = parsed.data;
+    const { items, employeeIds, dates: _dates, branchId: _branchId, ...body } = parsed.data;
     await assertSameBranchRelations(branchId, body.clientId, items.map((i) => i.serviceId), employeeIds);
-    await prisma.$transaction([
-      prisma.serviceOrderItem.deleteMany({ where: { orderId: id } }),
-      prisma.orderEmployee.deleteMany({ where: { orderId: id } }),
-    ]);
-    const data = await prisma.serviceOrder.update({
-      where: { id },
-      data: {
-        ...body,
-        branchId,
-        totalAmount: total(items),
-        items: { create: items },
-        employees: { create: employeeIds.map((employeeId) => ({ employeeId })) },
-      },
-      include,
-    });
+    const data = await prisma.$transaction(async (tx) => {
+      await tx.serviceOrderItem.deleteMany({ where: { orderId: id } });
+      await tx.orderEmployee.deleteMany({ where: { orderId: id } });
+      await tx.serviceOrder.update({
+        where: { id },
+        data: {
+          ...body,
+          branchId,
+          totalAmount: total(items),
+          items: { create: items },
+          employees: { create: employeeIds.map((employeeId) => ({ employeeId })) },
+        },
+      });
+      // Cancelling the whole OS also cancels any of its appointments that
+      // are still open - individual appointments are never bulk-recreated
+      // here (that would wipe their own status/history), only cascade-cancelled.
+      // This must run BEFORE the final read below, otherwise the returned
+      // order.appointments would be a stale snapshot from before the cascade.
+      if (body.status === "cancelado") {
+        await tx.appointment.updateMany({
+          where: { orderId: id, status: { notIn: ["finalizado", "cancelado"] } },
+          data: { status: "cancelado", cancelledAt: new Date(), cancelledBy: auth.userId, cancellationReason: "OS cancelada." },
+        });
+      }
+      // Must run after the status write above and before the final read below,
+      // so the returned order (and every other module reading transactions)
+      // reflects the up-to-date billing state in the same response.
+      await syncOrderBilling(tx, id);
+      return tx.serviceOrder.findUniqueOrThrow({ where: { id }, include });
+    }, { timeout: 15000 });
     return ok(serialize(data));
   } catch (error) {
     return handleAuthzError(error);

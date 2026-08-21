@@ -1,6 +1,6 @@
 const { contextBridge } = require("electron");
 
-contextBridge.exposeInMainWorld("festaflow", {
+contextBridge.exposeInMainWorld("leeveLimpeza", {
   platform: process.platform,
-  app: "FestaFlow Supabase",
+  app: "LeeveLimpeza",
 });

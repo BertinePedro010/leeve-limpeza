@@ -1,7 +1,9 @@
-# Auditoria de Arquitetura — FestaFlow
+# Auditoria de Arquitetura — LeeveLimpeza (ex-FestaFlow)
 
 > Documento gerado em auditoria somente-leitura. Nenhum arquivo de código foi modificado para produzir esta análise.
 > Data da auditoria: 2026-08-18
+>
+> **Atualização 2026-08-20**: o usuário confirmou um pivot real de negócio — o produto passa a se chamar LeeveLimpeza (empresa de limpeza), revertendo a decisão de manter "FestaFlow/eventos" registrada em `docs/MIGRATION_PLAN.md` seção 0 (ver seção 0.1 daquele documento). O texto abaixo é o diagnóstico original de 18/08 e permanece factualmente correto sobre a arquitetura técnica (stacks, modelos, autenticação) — só o nome do produto e o domínio de negócio mudaram, não a estrutura do código.
 
 ## Sumário executivo
 

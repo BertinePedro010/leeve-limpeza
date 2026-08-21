@@ -19,3 +19,17 @@ SUPABASE_SECRET_KEY="SUA_SUPABASE_SECRET_KEY_APENAS_SERVIDOR"
 Se a senha do banco tiver `@`, codifique como `%40`.
 
 Nunca use `SUPABASE_SECRET_KEY` em componentes client-side.
+
+## E-mail (opcional)
+
+Para o envio automatico de e-mail ao concluir um atendimento, adicione tambem:
+
+```env
+SMTP_HOST="smtp.exemplo.com"
+SMTP_PORT="587"
+SMTP_USER="usuario_smtp"
+SMTP_PASS="senha_smtp"
+EMAIL_FROM="LeeveLimpeza <contato@leevelimpeza.com>"
+```
+
+Sem essas variaveis, o sistema funciona normalmente — o envio e apenas ignorado (com aviso no log do servidor), nunca quebra a conclusao do atendimento.

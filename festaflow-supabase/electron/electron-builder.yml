@@ -1,5 +1,5 @@
-appId: br.com.festaflow.supabase
-productName: FestaFlow Supabase
+appId: br.com.leevelimpeza.app
+productName: LeeveLimpeza
 directories:
   output: release
 files:
@@ -17,7 +17,7 @@ extraResources:
 win:
   target:
     - nsis
-  artifactName: FestaFlow-Supabase-Setup-${version}.${ext}
+  artifactName: LeeveLimpeza-Setup-${version}.${ext}
 nsis:
   oneClick: false
   perMachine: false

@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { requireAuth, resolveBranchFilter, handleAuthzError } from "@/lib/authz";
+import { sumRevenue } from "@/lib/billing";
 import { ok, serialize } from "@/lib/json";
 
 export async function GET(request: Request) {
@@ -14,7 +15,7 @@ export async function GET(request: Request) {
       prisma.service.count({ where: { deletedAt: null, ...branchFilter } }),
       prisma.transaction.findMany({ where: { deletedAt: null, ...branchFilter } }),
     ]);
-    const revenue = transactions.filter((t) => t.type === "receita" && t.status === "pago").reduce((sum, t) => sum + Number(t.amount), 0);
+    const revenue = sumRevenue(transactions);
     const expenses = transactions.filter((t) => t.type === "despesa" && t.status === "pago").reduce((sum, t) => sum + Number(t.amount), 0);
     const receivable = transactions.filter((t) => t.type === "receita" && t.status === "pendente").reduce((sum, t) => sum + Number(t.amount), 0);
     const payable = transactions.filter((t) => t.type === "despesa" && t.status === "pendente").reduce((sum, t) => sum + Number(t.amount), 0);

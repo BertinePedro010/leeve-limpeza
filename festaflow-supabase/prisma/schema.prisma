@@ -32,6 +32,18 @@ enum PaymentStatus {
   pendente
 }
 
+enum RecurrenceFrequency {
+  weekly
+  monthly
+}
+
+enum PaymentMethod {
+  pix
+  credit_card
+  debit_card
+  cash
+}
+
 model Branch {
   id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   name      String   @unique @db.VarChar(120)
@@ -41,12 +53,14 @@ model Branch {
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  userBranches UserBranch[]
-  clients      Client[]
-  employees    Employee[]
-  services     Service[]
-  orders       ServiceOrder[]
-  transactions Transaction[]
+  userBranches       UserBranch[]
+  clients            Client[]
+  employees          Employee[]
+  services           Service[]
+  orders             ServiceOrder[]
+  transactions       Transaction[]
+  appointments       Appointment[]
+  recurringSchedules RecurringSchedule[]
 
   @@map("branches")
 }
@@ -68,14 +82,14 @@ model UserBranch {
 }
 
 model Profile {
-  id         String    @id @db.Uuid
-  name       String    @db.VarChar(180)
-  email      String    @unique @db.VarChar(180)
-  role       UserRole  @default(operador)
-  avatarUrl  String?   @map("avatar_url") @db.Text
-  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt  DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
-  deletedAt  DateTime? @map("deleted_at") @db.Timestamptz(6)
+  id        String    @id @db.Uuid
+  name      String    @db.VarChar(180)
+  email     String    @unique @db.VarChar(180)
+  role      UserRole  @default(operador)
+  avatarUrl String?   @map("avatar_url") @db.Text
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
 
   branches      UserBranch[]
   createdOrders ServiceOrder[] @relation("ServiceOrderCreatedBy")
@@ -85,19 +99,20 @@ model Profile {
 }
 
 model Client {
-  id          String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  branchId    String         @map("branch_id") @db.Uuid
-  name        String         @db.VarChar(180)
-  email       String?        @db.VarChar(180)
-  phone       String?        @db.VarChar(40)
-  document    String?        @unique @db.VarChar(40)
-  address     String?        @db.Text
-  notes       String?        @db.Text
-  createdAt   DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt   DateTime       @updatedAt @map("updated_at") @db.Timestamptz(6)
-  deletedAt   DateTime?      @map("deleted_at") @db.Timestamptz(6)
-  branch      Branch         @relation(fields: [branchId], references: [id], onDelete: Restrict)
-  orders      ServiceOrder[]
+  id                 String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  branchId           String              @map("branch_id") @db.Uuid
+  name               String              @db.VarChar(180)
+  email              String?             @db.VarChar(180)
+  phone              String?             @db.VarChar(40)
+  document           String?             @unique @db.VarChar(40)
+  address            String?             @db.Text
+  notes              String?             @db.Text
+  createdAt          DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime            @updatedAt @map("updated_at") @db.Timestamptz(6)
+  deletedAt          DateTime?           @map("deleted_at") @db.Timestamptz(6)
+  branch             Branch              @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  orders             ServiceOrder[]
+  recurringSchedules RecurringSchedule[]
 
   @@index([name], map: "idx_clients_name")
   @@index([email], map: "idx_clients_email")
@@ -108,19 +123,20 @@ model Client {
 }
 
 model Employee {
-  id            String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  branchId      String         @map("branch_id") @db.Uuid
-  name          String         @db.VarChar(180)
-  role          String         @db.VarChar(120)
-  phone         String?        @db.VarChar(40)
-  dailyRate     Decimal        @map("daily_rate") @db.Decimal(10, 2)
-  paymentType   String         @default("diaria") @map("payment_type") @db.VarChar(30)
-  notes         String?        @db.Text
-  createdAt     DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt     DateTime       @updatedAt @map("updated_at") @db.Timestamptz(6)
-  deletedAt     DateTime?      @map("deleted_at") @db.Timestamptz(6)
-  branch        Branch         @relation(fields: [branchId], references: [id], onDelete: Restrict)
-  orders        OrderEmployee[]
+  id           String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  branchId     String          @map("branch_id") @db.Uuid
+  name         String          @db.VarChar(180)
+  role         String          @db.VarChar(120)
+  phone        String?         @db.VarChar(40)
+  dailyRate    Decimal         @map("daily_rate") @db.Decimal(10, 2)
+  paymentType  String          @default("diaria") @map("payment_type") @db.VarChar(30)
+  notes        String?         @db.Text
+  createdAt    DateTime        @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime        @updatedAt @map("updated_at") @db.Timestamptz(6)
+  deletedAt    DateTime?       @map("deleted_at") @db.Timestamptz(6)
+  branch       Branch          @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  orders       OrderEmployee[]
+  appointments Appointment[]
 
   @@index([name], map: "idx_employees_name")
   @@index([phone], map: "idx_employees_phone")
@@ -129,19 +145,20 @@ model Employee {
 }
 
 model Service {
-  id            String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  branchId      String             @map("branch_id") @db.Uuid
-  name          String             @db.VarChar(180)
-  description   String?            @db.Text
-  price         Decimal            @db.Decimal(10, 2)
-  durationHours Decimal            @map("duration_hours") @db.Decimal(5, 2)
-  category      String             @db.VarChar(120)
-  active        Boolean            @default(true)
-  createdAt     DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt     DateTime           @updatedAt @map("updated_at") @db.Timestamptz(6)
-  deletedAt     DateTime?          @map("deleted_at") @db.Timestamptz(6)
-  branch        Branch             @relation(fields: [branchId], references: [id], onDelete: Restrict)
-  orderItems    ServiceOrderItem[]
+  id                 String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  branchId           String              @map("branch_id") @db.Uuid
+  name               String              @db.VarChar(180)
+  description        String?             @db.Text
+  price              Decimal             @db.Decimal(10, 2)
+  durationHours      Decimal             @map("duration_hours") @db.Decimal(5, 2)
+  category           String              @db.VarChar(120)
+  active             Boolean             @default(true)
+  createdAt          DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime            @updatedAt @map("updated_at") @db.Timestamptz(6)
+  deletedAt          DateTime?           @map("deleted_at") @db.Timestamptz(6)
+  branch             Branch              @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  orderItems         ServiceOrderItem[]
+  recurringSchedules RecurringSchedule[]
 
   @@index([name], map: "idx_services_name")
   @@index([category], map: "idx_services_category")
@@ -150,31 +167,38 @@ model Service {
 }
 
 model ServiceOrder {
-  id            String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  branchId      String              @map("branch_id") @db.Uuid
-  code          String              @unique @db.VarChar(40)
-  clientId      String              @map("client_id") @db.Uuid
-  eventDate     DateTime            @map("event_date") @db.Timestamptz(6)
-  startTime     String              @map("start_time") @db.VarChar(10)
-  endTime       String              @map("end_time") @db.VarChar(10)
-  location      String              @db.Text
-  status        OsStatus            @default(pendente)
-  paymentMethod String?             @map("payment_method") @db.VarChar(160)
-  notes         String?             @db.Text
-  signatureName String?             @map("signature_name") @db.VarChar(180)
-  signatureDate DateTime?           @map("signature_date") @db.Timestamptz(6)
-  totalAmount   Decimal             @default(0) @map("total_amount") @db.Decimal(10, 2)
-  createdBy     String?             @map("created_by") @db.Uuid
-  createdAt     DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt     DateTime            @updatedAt @map("updated_at") @db.Timestamptz(6)
-  deletedAt     DateTime?           @map("deleted_at") @db.Timestamptz(6)
-  branch        Branch              @relation(fields: [branchId], references: [id], onDelete: Restrict)
-  client        Client              @relation(fields: [clientId], references: [id], onDelete: Restrict)
-  createdByProfile Profile?         @relation("ServiceOrderCreatedBy", fields: [createdBy], references: [id], onDelete: SetNull)
-  items         ServiceOrderItem[]
-  employees     OrderEmployee[]
-  attachments   Attachment[]
-  transactions  Transaction[]
+  id                 String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  branchId           String              @map("branch_id") @db.Uuid
+  code               String              @unique @db.VarChar(40)
+  clientId           String              @map("client_id") @db.Uuid
+  eventDate          DateTime            @map("event_date") @db.Timestamptz(6)
+  startTime          String              @map("start_time") @db.VarChar(10)
+  endTime            String              @map("end_time") @db.VarChar(10)
+  location           String              @db.Text
+  status             OsStatus            @default(pendente)
+  // Free-text field kept exactly as-is for legacy records (e.g. "Pix 50/50",
+  // "Faturamento 30 dias") that a controlled enum cannot represent losslessly.
+  // New/edited orders always write `paymentMethod` (the enum) instead; this
+  // field is never written to anymore, only ever read for display.
+  paymentMethodLegacy String?            @map("payment_method") @db.VarChar(160)
+  paymentMethod      PaymentMethod?      @map("payment_method_new")
+  notes              String?             @db.Text
+  signatureName      String?             @map("signature_name") @db.VarChar(180)
+  signatureDate      DateTime?           @map("signature_date") @db.Timestamptz(6)
+  totalAmount        Decimal             @default(0) @map("total_amount") @db.Decimal(10, 2)
+  createdBy          String?             @map("created_by") @db.Uuid
+  createdAt          DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime            @updatedAt @map("updated_at") @db.Timestamptz(6)
+  deletedAt          DateTime?           @map("deleted_at") @db.Timestamptz(6)
+  branch             Branch              @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  client             Client              @relation(fields: [clientId], references: [id], onDelete: Restrict)
+  createdByProfile   Profile?            @relation("ServiceOrderCreatedBy", fields: [createdBy], references: [id], onDelete: SetNull)
+  items              ServiceOrderItem[]
+  employees          OrderEmployee[]
+  attachments        Attachment[]
+  transactions       Transaction[]
+  appointments       Appointment[]
+  recurringSchedules RecurringSchedule[]
 
   @@index([clientId], map: "idx_service_orders_client_id")
   @@index([eventDate], map: "idx_service_orders_event_date")
@@ -184,15 +208,15 @@ model ServiceOrder {
 }
 
 model ServiceOrderItem {
-  id          String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  orderId     String       @map("order_id") @db.Uuid
-  serviceId   String       @map("service_id") @db.Uuid
-  quantity    Int          @default(1)
-  unitPrice   Decimal      @map("unit_price") @db.Decimal(10, 2)
-  createdAt   DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt   DateTime     @updatedAt @map("updated_at") @db.Timestamptz(6)
-  order       ServiceOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  service     Service      @relation(fields: [serviceId], references: [id], onDelete: Restrict)
+  id        String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orderId   String       @map("order_id") @db.Uuid
+  serviceId String       @map("service_id") @db.Uuid
+  quantity  Int          @default(1)
+  unitPrice Decimal      @map("unit_price") @db.Decimal(10, 2)
+  createdAt DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime     @updatedAt @map("updated_at") @db.Timestamptz(6)
+  order     ServiceOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  service   Service      @relation(fields: [serviceId], references: [id], onDelete: Restrict)
 
   @@index([orderId], map: "idx_service_order_items_order_id")
   @@index([serviceId], map: "idx_service_order_items_service_id")
@@ -227,26 +251,100 @@ model Attachment {
 }
 
 model Transaction {
-  id          String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  branchId    String          @map("branch_id") @db.Uuid
-  type        TransactionType
-  category    String          @db.VarChar(120)
-  description String          @db.Text
-  amount      Decimal         @db.Decimal(10, 2)
-  dueDate     DateTime        @map("due_date") @db.Timestamptz(6)
-  paidAt      DateTime?       @map("paid_at") @db.Timestamptz(6)
-  status      PaymentStatus   @default(pendente)
-  orderId     String?         @map("order_id") @db.Uuid
-  createdAt   DateTime        @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt   DateTime        @updatedAt @map("updated_at") @db.Timestamptz(6)
-  deletedAt   DateTime?       @map("deleted_at") @db.Timestamptz(6)
-  branch      Branch          @relation(fields: [branchId], references: [id], onDelete: Restrict)
-  order       ServiceOrder?   @relation(fields: [orderId], references: [id], onDelete: SetNull)
+  id                  String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  branchId            String             @map("branch_id") @db.Uuid
+  type                TransactionType
+  category            String             @db.VarChar(120)
+  description         String             @db.Text
+  amount              Decimal            @db.Decimal(10, 2)
+  dueDate             DateTime           @map("due_date") @db.Timestamptz(6)
+  paidAt              DateTime?          @map("paid_at") @db.Timestamptz(6)
+  status              PaymentStatus      @default(pendente)
+  orderId             String?            @map("order_id") @db.Uuid
+  recurringScheduleId String?            @map("recurring_schedule_id") @db.Uuid
+  billingPeriod       DateTime?          @map("billing_period") @db.Date
+  paymentMethod       PaymentMethod?     @map("payment_method")
+  // True only for the single transaction auto-generated when an OS becomes
+  // "finalizado" (see lib/billing.ts). Manual transactions linked to an order
+  // (isAutoRevenue=false) are unlimited; at most one auto-revenue transaction
+  // may exist per order - enforced by a partial unique index in the migration,
+  // not only in application code.
+  isAutoRevenue       Boolean            @default(false) @map("is_auto_revenue")
+  createdAt           DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt           DateTime           @updatedAt @map("updated_at") @db.Timestamptz(6)
+  deletedAt           DateTime?          @map("deleted_at") @db.Timestamptz(6)
+  branch              Branch             @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  order               ServiceOrder?      @relation(fields: [orderId], references: [id], onDelete: SetNull)
+  recurringSchedule   RecurringSchedule? @relation(fields: [recurringScheduleId], references: [id], onDelete: SetNull)
 
   @@index([type], map: "idx_transactions_type")
   @@index([status], map: "idx_transactions_status")
   @@index([dueDate], map: "idx_transactions_due_date")
   @@index([orderId], map: "idx_transactions_order_id")
   @@index([branchId], map: "idx_transactions_branch_id")
+  @@index([recurringScheduleId], map: "idx_transactions_recurring_schedule_id")
   @@map("transactions")
+}
+
+model Appointment {
+  id                  String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orderId             String    @map("order_id") @db.Uuid
+  branchId            String    @map("branch_id") @db.Uuid
+  employeeId          String?   @map("employee_id") @db.Uuid
+  date                DateTime  @map("date") @db.Date
+  startTime           String    @map("start_time") @db.VarChar(10)
+  endTime             String    @map("end_time") @db.VarChar(10)
+  status              OsStatus  @default(pendente)
+  notes               String?   @db.Text
+  cancellationReason  String?   @map("cancellation_reason") @db.Text
+  cancelledAt         DateTime? @map("cancelled_at") @db.Timestamptz(6)
+  cancelledBy         String?   @map("cancelled_by") @db.Uuid
+  completedAt         DateTime? @map("completed_at") @db.Timestamptz(6)
+  recurringScheduleId String?   @map("recurring_schedule_id") @db.Uuid
+  createdAt           DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt           DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  order             ServiceOrder       @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  branch            Branch             @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  employee          Employee?          @relation(fields: [employeeId], references: [id], onDelete: SetNull)
+  recurringSchedule RecurringSchedule? @relation(fields: [recurringScheduleId], references: [id], onDelete: SetNull)
+
+  @@unique([recurringScheduleId, date], map: "uq_appointments_recurring_date")
+  @@index([branchId, date], map: "idx_appointments_branch_date")
+  @@index([orderId], map: "idx_appointments_order_id")
+  @@index([status], map: "idx_appointments_status")
+  @@map("appointments")
+}
+
+model RecurringSchedule {
+  id             String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orderId        String              @map("order_id") @db.Uuid
+  branchId       String              @map("branch_id") @db.Uuid
+  clientId       String              @map("client_id") @db.Uuid
+  serviceId      String              @map("service_id") @db.Uuid
+  frequency      RecurrenceFrequency
+  interval       Int                 @default(1)
+  dayOfWeek      Int?                @map("day_of_week")
+  dayOfMonth     Int?                @map("day_of_month")
+  startTime      String              @map("start_time") @db.VarChar(10)
+  endTime        String              @map("end_time") @db.VarChar(10)
+  price          Decimal             @db.Decimal(10, 2)
+  startDate      DateTime            @map("start_date") @db.Date
+  endDate        DateTime?           @map("end_date") @db.Date
+  generatedUntil DateTime?           @map("generated_until") @db.Date
+  active         Boolean             @default(true)
+  createdBy      String              @map("created_by") @db.Uuid
+  createdAt      DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime            @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  order        ServiceOrder  @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  branch       Branch        @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  client       Client        @relation(fields: [clientId], references: [id], onDelete: Restrict)
+  service      Service       @relation(fields: [serviceId], references: [id], onDelete: Restrict)
+  appointments Appointment[]
+  transactions Transaction[]
+
+  @@index([branchId], map: "idx_recurring_schedules_branch_id")
+  @@index([active], map: "idx_recurring_schedules_active")
+  @@map("recurring_schedules")
 }

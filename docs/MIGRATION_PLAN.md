@@ -1,15 +1,21 @@
-# Plano de Migração — FestaFlow → produção multi-filial (Supabase/Postgres/Prisma)
+# Plano de Migração — LeeveLimpeza → produção multi-filial (Supabase/Postgres/Prisma)
 
 > Documento de planejamento. Nenhuma alteração de código, schema ou dado foi feita para produzir este documento.
 > Data: 2026-08-18. Baseado em `docs/ARCHITECTURE_AUDIT.md` (auditoria completa + adendo de verificação).
 
 ---
 
-## 0. Conflito crítico — RESOLVIDO pelo usuário em 2026-08-18
+## 0.1 Atualização de decisão — 2026-08-20 (substitui a decisão abaixo)
 
-Confirmado pelo usuário: Vitória e Cachoeiro são filiais físicas **reais** do negócio FestaFlow (eventos/festas). A moldura "empresa de limpeza" do prompt original era texto de template incorreto/desatualizado e **não** reflete o domínio real. Decisão explícita: manter FestaFlow e seu domínio de eventos/festas integralmente — nenhuma renomeação da aplicação, nenhum redesenho de domínio em torno de limpeza. A aplicação de produção a evoluir é confirmada como `festaflow-supabase/`.
+O usuário confirmou em 2026-08-20 que desta vez é um **pivot real de negócio**: o produto passa a se chamar **LeeveLimpeza**, uma empresa de limpeza (não mais eventos/festas). Isso reverte deliberadamente a decisão de 2026-08-18 registrada logo abaixo — não é o mesmo tipo de mix-up de template já corrigido antes, foi confirmado explicitamente pelo usuário como intencional.
 
-Consequência prática: todo o restante deste documento (arquitetura de isolamento multi-filial — `branches`, `branch_id`, RLS, `user_branches`) se aplica **sem nenhuma mudança de rótulo ou nomenclatura** — os campos e termos já usados no schema (`ServiceOrder`, `eventDate`, etc.) permanecem como estão. A única mudança de decisão é a da seção 4 abaixo (serviços também ficam por filial, não globais).
+Consequência prática: todo o texto voltado ao usuário ("FestaFlow" → "LeeveLimpeza") foi atualizado em `festaflow-supabase/` (app metadata, login, sidebar, impressão de OS, Electron, README). O modelo de dados, nomes de campos/tabelas e a arquitetura multi-filial permanecem exatamente como projetados abaixo — a mudança é só de marca/domínio de negócio, não de estrutura. A pasta e o `package.json` `name` continuam `festaflow-supabase` (identificador interno, não renomeado).
+
+## 0. Conflito crítico — decisão de 2026-08-18 (histórico, substituída acima)
+
+Confirmado pelo usuário em 18/08: Vitória e Cachoeiro são filiais físicas **reais** do negócio FestaFlow (eventos/festas). A moldura "empresa de limpeza" do prompt original era texto de template incorreto/desatualizado e **não** refletia o domínio real *naquele momento*. Decisão explícita então: manter FestaFlow e seu domínio de eventos/festas integralmente. Ver 0.1 acima para a atualização de 20/08 que substitui esta decisão.
+
+Consequência prática (ainda válida): todo o restante deste documento (arquitetura de isolamento multi-filial — `branches`, `branch_id`, RLS, `user_branches`) se aplica **sem nenhuma mudança de rótulo ou nomenclatura** — os campos e termos já usados no schema (`ServiceOrder`, `eventDate`, etc.) permanecem como estão. A única mudança de decisão é a da seção 4 abaixo (serviços também ficam por filial, não globais).
 
 ---
 

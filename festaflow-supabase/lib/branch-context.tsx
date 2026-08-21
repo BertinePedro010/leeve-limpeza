@@ -12,7 +12,7 @@ type BranchContextValue = {
   loading: boolean;
 };
 
-const STORAGE_KEY = "festaflow:activeBranchId";
+const STORAGE_KEY = "leeveLimpeza:activeBranchId";
 const BranchContext = createContext<BranchContextValue | null>(null);
 
 export function BranchProvider({ children }: { children: ReactNode }) {

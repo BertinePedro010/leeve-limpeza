@@ -12,7 +12,7 @@ function createWindow() {
     height: 920,
     minWidth: 1100,
     minHeight: 720,
-    title: "FestaFlow Supabase",
+    title: "LeeveLimpeza",
     autoHideMenuBar: true,
     backgroundColor: "#020617",
     webPreferences: {

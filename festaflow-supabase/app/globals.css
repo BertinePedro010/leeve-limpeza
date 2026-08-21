@@ -7,4 +7,24 @@ html, body { min-height: 100%; background: #f8fafc; }
   .no-print { display: none !important; }
   .print-only { display: block !important; }
   body { background: white !important; }
+
+  @page {
+    margin: 16mm 12mm;
+  }
+
+  /* Repeats the table header on every printed page instead of only the first. */
+  .report-table thead {
+    display: table-header-group;
+  }
+
+  /* Never split a data row across a page break. */
+  .report-table tr {
+    break-inside: avoid;
+  }
+
+  /* Keeps a signature block (label + blank line) from being separated across
+     a page break, e.g. at the end of the OS PDF. */
+  .signature-block {
+    break-inside: avoid;
+  }
 }
