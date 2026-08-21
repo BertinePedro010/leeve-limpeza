@@ -4,11 +4,14 @@ import type { AuthContext } from "@/lib/authz";
 import { transactionSchema } from "@/lib/validators";
 import { fail, ok, serialize } from "@/lib/json";
 
-async function resolveTransactionBranch(auth: AuthContext, orderId: string | null | undefined, fallbackBranchId: string) {
+async function resolveTransactionBranch(auth: AuthContext, orderId: string | null | undefined, requestedBranchId: string | undefined, fallbackBranchId: string) {
   if (orderId) {
     const order = await prisma.serviceOrder.findUnique({ where: { id: orderId } });
     if (!order) throw new AuthzError("OS vinculada nao encontrada.", 422);
     assertBranchAccess(auth, order.branchId);
+    if (requestedBranchId && requestedBranchId !== order.branchId) {
+      throw new AuthzError("branchId informado nao corresponde a filial da OS vinculada.", 422);
+    }
     return order.branchId;
   }
   return fallbackBranchId;
@@ -25,7 +28,7 @@ export async function PUT(request: Request, { params }: { params: Promise<{ id: 
     if (!parsed.success) return fail("Lancamento invalido.", 422);
     const requested = parsed.data.branchId ?? existing.branchId;
     if (requested !== existing.branchId) assertBranchAccess(auth, requested);
-    const branchId = await resolveTransactionBranch(auth, parsed.data.orderId, requested);
+    const branchId = await resolveTransactionBranch(auth, parsed.data.orderId, parsed.data.branchId, requested);
     const { branchId: _branchId, ...rest } = parsed.data;
     const data = await prisma.transaction.update({ where: { id }, data: { ...rest, branchId } });
     return ok(serialize(data));
