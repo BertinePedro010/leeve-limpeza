@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/prisma";
-import { requireAuth, resolveBranchFilter, assertRecordBranchAccess, AuthzError, handleAuthzError } from "@/lib/authz";
+import { requireAuth, requireModule, resolveBranchFilter, assertRecordBranchAccess, AuthzError, handleAuthzError } from "@/lib/authz";
 import { appointmentCreateSchema } from "@/lib/validators";
 import { fail, ok, serialize } from "@/lib/json";
 
@@ -11,6 +11,7 @@ const include = {
 export async function GET(request: Request) {
   try {
     const auth = await requireAuth();
+    requireModule(auth, "orders");
     const url = new URL(request.url);
     const branchId = url.searchParams.get("branchId");
     const from = url.searchParams.get("from");
@@ -39,6 +40,7 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   try {
     const auth = await requireAuth();
+    requireModule(auth, "orders");
     const parsed = appointmentCreateSchema.safeParse(await request.json());
     if (!parsed.success) return fail("Atendimento invalido.", 422);
     const { orderId, employeeId, dates, startTime, endTime, notes } = parsed.data;

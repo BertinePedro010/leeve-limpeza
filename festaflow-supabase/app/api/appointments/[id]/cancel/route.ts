@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/prisma";
-import { requireAuth, assertRecordBranchAccess, handleAuthzError } from "@/lib/authz";
+import { requireAuth, requireModule, assertRecordBranchAccess, handleAuthzError } from "@/lib/authz";
 import { appointmentCancelSchema } from "@/lib/validators";
 import { fail, ok, serialize } from "@/lib/json";
 
@@ -8,6 +8,7 @@ import { fail, ok, serialize } from "@/lib/json";
 export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const auth = await requireAuth();
+    requireModule(auth, "orders");
     const { id } = await params;
     const existing = await prisma.appointment.findUnique({ where: { id } });
     assertRecordBranchAccess(auth, existing, "Atendimento nao encontrado.");

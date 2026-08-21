@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/prisma";
-import { requireAuth, resolveBranchFilter, handleAuthzError } from "@/lib/authz";
+import { requireAuth, requireModule, resolveBranchFilter, handleAuthzError } from "@/lib/authz";
 import { fail, ok, serialize } from "@/lib/json";
 
 // Branch-scoped, server-filtered appointment list for a date range - the
@@ -8,6 +8,7 @@ import { fail, ok, serialize } from "@/lib/json";
 export async function GET(request: Request) {
   try {
     const auth = await requireAuth();
+    requireModule(auth, "calendar");
     const url = new URL(request.url);
     const branchId = url.searchParams.get("branchId");
     const from = url.searchParams.get("from");

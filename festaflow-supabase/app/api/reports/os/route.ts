@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/prisma";
-import { requireAuth, handleAuthzError } from "@/lib/authz";
+import { requireAuth, requireModule, handleAuthzError } from "@/lib/authz";
 import { resolvePeriod, resolveReportBranchFilter } from "@/lib/reports";
 import { sumRevenue } from "@/lib/billing";
 import { ok, serialize } from "@/lib/json";
@@ -7,6 +7,7 @@ import { ok, serialize } from "@/lib/json";
 export async function GET(request: Request) {
   try {
     const auth = await requireAuth();
+    requireModule(auth, "reports");
     const url = new URL(request.url);
     const branchFilter = await resolveReportBranchFilter(auth, url.searchParams.get("branchId"));
     const { from, to } = resolvePeriod(url);

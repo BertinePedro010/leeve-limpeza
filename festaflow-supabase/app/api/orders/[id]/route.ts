@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/prisma";
-import { requireAuth, assertRecordBranchAccess, assertBranchAccess, AuthzError, handleAuthzError } from "@/lib/authz";
+import { requireAuth, requireModule, assertRecordBranchAccess, assertBranchAccess, AuthzError, handleAuthzError } from "@/lib/authz";
 import { orderSchema } from "@/lib/validators";
 import { syncOrderBilling } from "@/lib/billing";
 import { fail, ok, serialize } from "@/lib/json";
@@ -8,7 +8,13 @@ function total(items: Array<{ quantity: number; unitPrice: number }>) {
   return items.reduce((sum, item) => sum + item.quantity * Number(item.unitPrice), 0);
 }
 
-const include = { client: true, branch: { select: { id: true, name: true, city: true } }, items: { include: { service: true } }, employees: { include: { employee: true } }, attachments: true, transactions: true, appointments: { include: { employee: { select: { id: true, name: true } } }, orderBy: [{ date: "asc" as const }, { startTime: "asc" as const }] } };
+// `transactions` (real amounts/status/payment method) is exactly what the
+// "finance" module gates elsewhere - a user with only "orders" must not
+// recover that data through an order's embedded relations, so it is
+// included only when the caller can also view finance.
+function include(canViewFinance: boolean) {
+  return { client: true, branch: { select: { id: true, name: true, city: true } }, items: { include: { service: true } }, employees: { include: { employee: true } }, attachments: true, transactions: canViewFinance, appointments: { include: { employee: { select: { id: true, name: true } } }, orderBy: [{ date: "asc" as const }, { startTime: "asc" as const }] } };
+}
 
 // Used by the calendar (click an appointment -> load its full order) and by
 // Financeiro's "ver detalhes" action - the one place both features fetch a
@@ -16,8 +22,10 @@ const include = { client: true, branch: { select: { id: true, name: true, city: 
 export async function GET(_request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const auth = await requireAuth();
+    requireModule(auth, "orders");
     const { id } = await params;
-    const order = await prisma.serviceOrder.findUnique({ where: { id, deletedAt: null }, include });
+    const canViewFinance = auth.profile.role === "admin" || auth.profile.allowedModules.includes("finance");
+    const order = await prisma.serviceOrder.findUnique({ where: { id, deletedAt: null }, include: include(canViewFinance) });
     assertRecordBranchAccess(auth, order, "OS nao encontrada.");
     return ok(serialize(order));
   } catch (error) {
@@ -50,11 +58,13 @@ async function assertSameBranchRelations(
 export async function PUT(request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const auth = await requireAuth();
+    requireModule(auth, "orders");
     const { id } = await params;
     const existing = await prisma.serviceOrder.findUnique({ where: { id } });
     assertRecordBranchAccess(auth, existing, "OS nao encontrada.");
     const parsed = orderSchema.safeParse(await request.json());
     if (!parsed.success) return fail("OS invalida.", 422);
+    const canViewFinance = auth.profile.role === "admin" || auth.profile.allowedModules.includes("finance");
     const branchId = parsed.data.branchId ?? existing.branchId;
     if (branchId !== existing.branchId) assertBranchAccess(auth, branchId);
     const { items, employeeIds, dates: _dates, branchId: _branchId, ...body } = parsed.data;
@@ -87,7 +97,7 @@ export async function PUT(request: Request, { params }: { params: Promise<{ id: 
       // so the returned order (and every other module reading transactions)
       // reflects the up-to-date billing state in the same response.
       await syncOrderBilling(tx, id);
-      return tx.serviceOrder.findUniqueOrThrow({ where: { id }, include });
+      return tx.serviceOrder.findUniqueOrThrow({ where: { id }, include: include(canViewFinance) });
     }, { timeout: 15000 });
     return ok(serialize(data));
   } catch (error) {
@@ -98,6 +108,7 @@ export async function PUT(request: Request, { params }: { params: Promise<{ id: 
 export async function DELETE(_request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const auth = await requireAuth();
+    requireModule(auth, "orders");
     const { id } = await params;
     const existing = await prisma.serviceOrder.findUnique({ where: { id } });
     assertRecordBranchAccess(auth, existing, "OS nao encontrada.");

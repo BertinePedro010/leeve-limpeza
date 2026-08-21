@@ -1,11 +1,12 @@
 import { prisma } from "@/lib/prisma";
-import { requireAuth, assertRecordBranchAccess, handleAuthzError } from "@/lib/authz";
+import { requireAuth, requireModule, assertRecordBranchAccess, handleAuthzError } from "@/lib/authz";
 import { resolvePeriod } from "@/lib/reports";
 import { ok, serialize } from "@/lib/json";
 
 export async function GET(request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const auth = await requireAuth();
+    requireModule(auth, "reports");
     const { id } = await params;
     const employee = await prisma.employee.findUnique({ where: { id } });
     assertRecordBranchAccess(auth, employee, "Funcionario nao encontrado.");

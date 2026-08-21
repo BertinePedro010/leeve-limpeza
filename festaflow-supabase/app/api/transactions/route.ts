@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/prisma";
-import { requireAuth, resolveBranchIdForCreate, resolveBranchFilter, assertBranchAccess, AuthzError, handleAuthzError } from "@/lib/authz";
+import { requireAuth, requireModule, resolveBranchIdForCreate, resolveBranchFilter, assertBranchAccess, AuthzError, handleAuthzError } from "@/lib/authz";
 import type { AuthContext } from "@/lib/authz";
 import { transactionSchema } from "@/lib/validators";
 import { fail, ok, serialize } from "@/lib/json";
@@ -20,6 +20,7 @@ async function resolveTransactionBranch(auth: AuthContext, orderId: string | nul
 export async function GET(request: Request) {
   try {
     const auth = await requireAuth();
+    requireModule(auth, "finance");
     const branchId = new URL(request.url).searchParams.get("branchId");
     const data = await prisma.transaction.findMany({
       where: { deletedAt: null, branchId: resolveBranchFilter(auth, branchId) },
@@ -35,6 +36,7 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   try {
     const auth = await requireAuth();
+    requireModule(auth, "finance");
     const parsed = transactionSchema.safeParse(await request.json());
     if (!parsed.success) return fail("Lancamento invalido.", 422);
     const branchId = await resolveTransactionBranch(auth, parsed.data.orderId, parsed.data.branchId);

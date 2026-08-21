@@ -17,7 +17,7 @@ export class AuthzError extends Error {
 
 export interface AuthContext {
   userId: string;
-  profile: { id: string; role: UserRole; name: string; email: string };
+  profile: { id: string; role: UserRole; name: string; email: string; allowedModules: string[] };
   branchIds: string[];
 }
 
@@ -32,7 +32,7 @@ export async function requireAuth(): Promise<AuthContext> {
   }
   return {
     userId: user.id,
-    profile: { id: profile.id, role: profile.role, name: profile.name, email: profile.email },
+    profile: { id: profile.id, role: profile.role, name: profile.name, email: profile.email, allowedModules: profile.allowedModules },
     branchIds: profile.branches.map((b) => b.branchId),
   };
 }
@@ -40,6 +40,25 @@ export async function requireAuth(): Promise<AuthContext> {
 export function requireRole(auth: AuthContext, ...roles: UserRole[]): void {
   if (!roles.includes(auth.profile.role)) {
     throw new AuthzError("Papel nao autorizado para esta acao.", 403);
+  }
+}
+
+/**
+ * Module-level permission check. role="admin" always bypasses (full access,
+ * preserves existing admin behavior) - every other role is gated strictly by
+ * `profile.allowedModules`, checked here on every read AND write, never only
+ * hidden client-side. "dashboard" is intentionally not a member of ModuleName:
+ * it stays always-reachable as the landing page, with its own route zeroing
+ * out financial figures for users lacking the "finance" module instead of
+ * blocking the whole page. "branches" also stays outside this list - that
+ * stays exclusive to requireGlobalAdmin, unchanged.
+ */
+export type ModuleName = "clients" | "employees" | "services" | "orders" | "calendar" | "finance" | "reports";
+
+export function requireModule(auth: AuthContext, moduleName: ModuleName): void {
+  if (auth.profile.role === "admin") return;
+  if (!auth.profile.allowedModules.includes(moduleName)) {
+    throw new AuthzError("Modulo nao autorizado para este usuario.", 403);
   }
 }
 

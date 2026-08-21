@@ -1,11 +1,12 @@
 import { prisma } from "@/lib/prisma";
-import { requireAuth, resolveBranchIdForCreate, resolveBranchFilter, handleAuthzError } from "@/lib/authz";
+import { requireAuth, requireModule, resolveBranchIdForCreate, resolveBranchFilter, handleAuthzError } from "@/lib/authz";
 import { employeeSchema } from "@/lib/validators";
 import { fail, ok, serialize } from "@/lib/json";
 
 export async function GET(request: Request) {
   try {
     const auth = await requireAuth();
+    requireModule(auth, "employees");
     const branchId = new URL(request.url).searchParams.get("branchId");
     const data = await prisma.employee.findMany({
       where: { deletedAt: null, branchId: resolveBranchFilter(auth, branchId) },
@@ -20,6 +21,7 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   try {
     const auth = await requireAuth();
+    requireModule(auth, "employees");
     const parsed = employeeSchema.safeParse(await request.json());
     if (!parsed.success) return fail("Funcionario invalido.", 422);
     const branchId = resolveBranchIdForCreate(auth, parsed.data.branchId);

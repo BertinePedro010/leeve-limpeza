@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/prisma";
-import { requireAuth, assertRecordBranchAccess, assertBranchAccess, AuthzError, handleAuthzError } from "@/lib/authz";
+import { requireAuth, requireModule, assertRecordBranchAccess, assertBranchAccess, AuthzError, handleAuthzError } from "@/lib/authz";
 import type { AuthContext } from "@/lib/authz";
 import { transactionSchema } from "@/lib/validators";
 import { fail, ok, serialize } from "@/lib/json";
@@ -17,6 +17,7 @@ async function resolveTransactionBranch(auth: AuthContext, orderId: string | nul
 export async function PUT(request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const auth = await requireAuth();
+    requireModule(auth, "finance");
     const { id } = await params;
     const existing = await prisma.transaction.findUnique({ where: { id } });
     assertRecordBranchAccess(auth, existing, "Lancamento nao encontrado.");
@@ -36,6 +37,7 @@ export async function PUT(request: Request, { params }: { params: Promise<{ id: 
 export async function DELETE(_request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const auth = await requireAuth();
+    requireModule(auth, "finance");
     const { id } = await params;
     const existing = await prisma.transaction.findUnique({ where: { id } });
     assertRecordBranchAccess(auth, existing, "Lancamento nao encontrado.");

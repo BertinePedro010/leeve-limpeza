@@ -1,11 +1,12 @@
 import { prisma } from "@/lib/prisma";
-import { requireAuth, assertRecordBranchAccess, assertBranchAccess, handleAuthzError } from "@/lib/authz";
+import { requireAuth, requireModule, assertRecordBranchAccess, assertBranchAccess, handleAuthzError } from "@/lib/authz";
 import { employeeSchema } from "@/lib/validators";
 import { fail, ok, serialize } from "@/lib/json";
 
 export async function PUT(request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const auth = await requireAuth();
+    requireModule(auth, "employees");
     const { id } = await params;
     const existing = await prisma.employee.findUnique({ where: { id } });
     assertRecordBranchAccess(auth, existing, "Funcionario nao encontrado.");
@@ -24,6 +25,7 @@ export async function PUT(request: Request, { params }: { params: Promise<{ id: 
 export async function DELETE(_request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const auth = await requireAuth();
+    requireModule(auth, "employees");
     const { id } = await params;
     const existing = await prisma.employee.findUnique({ where: { id } });
     assertRecordBranchAccess(auth, existing, "Funcionario nao encontrado.");

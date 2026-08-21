@@ -34,3 +34,16 @@ export const recurringScheduleSchema = z.object({
 });
 
 export const branchSchema = z.object({ name: z.string().min(2), city: z.string().min(2), state: z.string().length(2), active: z.coerce.boolean().default(true) });
+
+// Keep in sync with ModuleName in lib/authz.ts.
+export const moduleNameEnum = z.enum(["clients", "employees", "services", "orders", "calendar", "finance", "reports"]);
+export const userRoleEnum = z.enum(["admin", "operador", "funcionario"]);
+export const userCreateSchema = z.object({ name: z.string().min(2), email: z.string().email(), password: z.string().min(8), role: userRoleEnum, branchIds: z.array(z.string().uuid()).default([]), allowedModules: z.array(moduleNameEnum).default([]) });
+// `active` deliberately uses z.boolean(), NOT z.coerce.boolean() - coerce is
+// just Boolean(value) under the hood, so a direct API call sending the
+// string "false" would coerce to true and silently keep/reactivate an
+// account the caller intended to deactivate. This schema is the actual
+// trust boundary for this endpoint (the shipped UI always sends a real
+// boolean, so this only matters for a caller bypassing the UI).
+export const userUpdateSchema = z.object({ name: z.string().min(2), role: userRoleEnum, active: z.boolean(), branchIds: z.array(z.string().uuid()).default([]), allowedModules: z.array(moduleNameEnum).default([]) });
+export const userResetPasswordSchema = z.object({ password: z.string().min(8) });

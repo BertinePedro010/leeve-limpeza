@@ -86,6 +86,12 @@ model Profile {
   name      String    @db.VarChar(180)
   email     String    @unique @db.VarChar(180)
   role      UserRole  @default(operador)
+  // Module-level permission list (e.g. "clients", "finance", "reports") -
+  // ignored entirely for role=admin (always full access). See requireModule()
+  // in lib/authz.ts. "dashboard" and "branches" are never members of this
+  // list: dashboard is always visible (with financial fields gated inline),
+  // branches stays exclusive to requireGlobalAdmin as before.
+  allowedModules String[]  @default([]) @map("allowed_modules")
   avatarUrl String?   @map("avatar_url") @db.Text
   createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)

@@ -1,6 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import type { Prisma } from "@prisma/client";
-import { requireAuth, resolveBranchIdForCreate, resolveBranchFilter, AuthzError, handleAuthzError } from "@/lib/authz";
+import { requireAuth, requireModule, resolveBranchIdForCreate, resolveBranchFilter, AuthzError, handleAuthzError } from "@/lib/authz";
 import { recurringScheduleSchema } from "@/lib/validators";
 import { fail, ok, serialize } from "@/lib/json";
 import { generateAppointments } from "@/lib/recurrence";
@@ -16,6 +16,7 @@ async function nextCode(client: Prisma.TransactionClient | typeof prisma, branch
 export async function GET(request: Request) {
   try {
     const auth = await requireAuth();
+    requireModule(auth, "orders");
     const branchId = new URL(request.url).searchParams.get("branchId");
     const data = await prisma.recurringSchedule.findMany({
       where: { branchId: resolveBranchFilter(auth, branchId) },
@@ -31,6 +32,7 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   try {
     const auth = await requireAuth();
+    requireModule(auth, "orders");
     const body = await request.json();
     const parsed = recurringScheduleSchema.safeParse(body);
     if (!parsed.success) return fail("Recorrencia invalida.", 422);

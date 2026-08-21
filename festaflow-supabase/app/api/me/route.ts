@@ -7,7 +7,7 @@ export async function GET() {
     const auth = await requireAuth();
     const activeBranchCount = await prisma.branch.count({ where: { active: true } });
     const isGlobalAdmin = auth.profile.role === "admin" && activeBranchCount > 0 && auth.branchIds.length >= activeBranchCount;
-    return ok(serialize({ id: auth.userId, name: auth.profile.name, email: auth.profile.email, role: auth.profile.role, isGlobalAdmin }));
+    return ok(serialize({ id: auth.userId, name: auth.profile.name, email: auth.profile.email, role: auth.profile.role, allowedModules: auth.profile.allowedModules, isGlobalAdmin }));
   } catch (error) {
     return handleAuthzError(error);
   }

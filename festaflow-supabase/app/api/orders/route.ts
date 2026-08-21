@@ -1,6 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import type { Prisma } from "@prisma/client";
-import { requireAuth, resolveBranchIdForCreate, resolveBranchFilter, AuthzError, handleAuthzError } from "@/lib/authz";
+import { requireAuth, requireModule, resolveBranchIdForCreate, resolveBranchFilter, AuthzError, handleAuthzError } from "@/lib/authz";
 import { orderSchema } from "@/lib/validators";
 import { syncOrderBilling } from "@/lib/billing";
 import { fail, ok, serialize } from "@/lib/json";
@@ -20,7 +20,15 @@ function total(items: Array<{ quantity: number; unitPrice: number }>) {
   return items.reduce((sum, item) => sum + item.quantity * Number(item.unitPrice), 0);
 }
 
-const include = { client: true, branch: { select: { id: true, name: true, city: true } }, items: { include: { service: true } }, employees: { include: { employee: true } }, attachments: true, transactions: true, appointments: { include: { employee: { select: { id: true, name: true } } }, orderBy: [{ date: "asc" as const }, { startTime: "asc" as const }] } };
+// `transactions` (real amounts/status/payment method) is exactly what the
+// "finance" module gates elsewhere (see app/api/transactions/route.ts) - a
+// user with only "orders" must not recover that data through an order's
+// embedded relations, so it is included only when the caller can also view
+// finance. Everything else here is inherent to viewing an order and stays
+// unconditional.
+function include(canViewFinance: boolean) {
+  return { client: true, branch: { select: { id: true, name: true, city: true } }, items: { include: { service: true } }, employees: { include: { employee: true } }, attachments: true, transactions: canViewFinance, appointments: { include: { employee: { select: { id: true, name: true } } }, orderBy: [{ date: "asc" as const }, { startTime: "asc" as const }] } };
+}
 
 async function assertSameBranchRelations(
   branchId: string,
@@ -47,11 +55,13 @@ async function assertSameBranchRelations(
 export async function GET(request: Request) {
   try {
     const auth = await requireAuth();
+    requireModule(auth, "orders");
     const branchId = new URL(request.url).searchParams.get("branchId");
+    const canViewFinance = auth.profile.role === "admin" || auth.profile.allowedModules.includes("finance");
     const data = await prisma.serviceOrder.findMany({
       where: { deletedAt: null, branchId: resolveBranchFilter(auth, branchId) },
       orderBy: { eventDate: "asc" },
-      include,
+      include: include(canViewFinance),
     });
     return ok(serialize(data));
   } catch (error) {
@@ -62,8 +72,10 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   try {
     const auth = await requireAuth();
+    requireModule(auth, "orders");
     const parsed = orderSchema.safeParse(await request.json());
     if (!parsed.success) return fail("OS invalida.", 422);
+    const canViewFinance = auth.profile.role === "admin" || auth.profile.allowedModules.includes("finance");
     const branchId = resolveBranchIdForCreate(auth, parsed.data.branchId);
     const { items, employeeIds, dates, branchId: _branchId, ...body } = parsed.data;
     await assertSameBranchRelations(branchId, body.clientId, items.map((i) => i.serviceId), employeeIds);
@@ -102,7 +114,7 @@ export async function POST(request: Request) {
       // with `include` would have returned an order.appointments snapshot
       // from before appointment.createMany ran (same stale-response class of
       // bug already fixed once for the cascade-cancel path in PUT below).
-      return tx.serviceOrder.findUniqueOrThrow({ where: { id: order.id }, include });
+      return tx.serviceOrder.findUniqueOrThrow({ where: { id: order.id }, include: include(canViewFinance) });
     }, { timeout: 15000 });
     return ok(serialize(data), 201);
   } catch (error) {
