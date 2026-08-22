@@ -22,10 +22,13 @@ export async function GET(request: Request) {
     const auth = await requireAuth();
     requireModule(auth, "finance");
     const branchId = new URL(request.url).searchParams.get("branchId");
+    // `order` intentionally not included - FinanceView resolves a
+    // transaction's linked OS from the separately-loaded `orders` list
+    // (orders.find), it never reads `t.order`, so embedding the full
+    // ServiceOrder per transaction was pure payload weight.
     const data = await prisma.transaction.findMany({
       where: { deletedAt: null, branchId: resolveBranchFilter(auth, branchId) },
       orderBy: { dueDate: "desc" },
-      include: { order: true },
     });
     return ok(serialize(data));
   } catch (error) {

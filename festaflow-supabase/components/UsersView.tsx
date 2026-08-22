@@ -2,8 +2,8 @@
 
 import { FormEvent, useEffect, useState } from "react";
 import { api, Modal, Input, Save } from "@/components/ui";
+import { useBranch } from "@/lib/branch-context";
 
-type Branch = { id: string; name: string };
 type UserProfile = { id: string; name: string; email: string; role: string; allowedModules: string[]; deletedAt: string | null; branches: Array<{ branchId: string }> };
 
 const MODULES: Array<[string, string]> = [["clients", "Clientes"], ["employees", "Funcionarios"], ["services", "Servicos"], ["orders", "Ordens de Servico"], ["calendar", "Calendario"], ["finance", "Financeiro"], ["reports", "Relatorios"]];
@@ -20,8 +20,11 @@ function toggle(list: string[], id: string): string[] {
 // by requireGlobalAdmin + requireModule (see lib/authz.ts) - this UI only
 // hides/shows controls, it is never itself the authorization boundary.
 export default function UsersView() {
+  // Branch list is already loaded once for the whole app in BranchContext
+  // (same /api/branches endpoint, same auth-scoped filter) - reusing it here
+  // avoids a second, redundant fetch every time this tab is opened.
+  const { branches } = useBranch();
   const [users, setUsers] = useState<UserProfile[]>([]);
-  const [branches, setBranches] = useState<Branch[]>([]);
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<UserProfile | null>(null);
   const [form, setForm] = useState(blank);
@@ -30,8 +33,8 @@ export default function UsersView() {
 
   async function load() {
     try {
-      const [u, b] = await Promise.all([api<UserProfile[]>("/api/users"), api<Branch[]>("/api/branches")]);
-      setUsers(u); setBranches(b); setLoadError("");
+      setUsers(await api<UserProfile[]>("/api/users"));
+      setLoadError("");
     } catch (err) { setLoadError(err instanceof Error ? err.message : "Erro ao carregar usuarios."); }
   }
   useEffect(() => { load(); }, []);

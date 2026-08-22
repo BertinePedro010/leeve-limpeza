@@ -23,7 +23,9 @@ export async function GET(request: Request) {
         ...(serviceId ? { order: { items: { some: { serviceId } } } } : {}),
       },
       include: {
-        order: { select: { code: true, client: { select: { name: true } }, items: { include: { service: true } } } },
+        // ReportsView only ever reads order.items[0]?.service?.name - the
+        // full Service model per item was never rendered.
+        order: { select: { code: true, client: { select: { name: true } }, items: { select: { service: { select: { name: true } } } } } },
         employee: { select: { name: true } },
         branch: { select: { name: true } },
       },

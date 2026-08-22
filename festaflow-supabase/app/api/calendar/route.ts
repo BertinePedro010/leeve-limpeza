@@ -31,7 +31,10 @@ export async function GET(request: Request) {
             id: true,
             code: true,
             client: { select: { id: true, name: true } },
-            items: { include: { service: true } },
+            // CalendarView only ever reads items[0]?.service?.name and
+            // items.length - the full Service model (price, duration,
+            // category, branchId, timestamps) per item was never rendered.
+            items: { select: { service: { select: { name: true } } } },
           },
         },
         employee: { select: { id: true, name: true } },

@@ -45,6 +45,19 @@ async function sendViaSmtp(message: EmailMessage): Promise<EmailResult> {
   }
 }
 
+// clientName/serviceName/orderCode come from user-editable records (clients,
+// services, orders) - escaped before interpolation so a name like
+// `<img src=x onerror=...>` is sent as literal text in the email body, not
+// executed as markup by the recipient's mail client.
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 export async function sendAppointmentCompletedEmail(params: {
   clientEmail: string | null;
   clientName: string;
@@ -54,9 +67,12 @@ export async function sendAppointmentCompletedEmail(params: {
 }): Promise<EmailResult> {
   if (!params.clientEmail) return { sent: false, skipped: true };
   const dateLabel = params.date.toLocaleDateString("pt-BR");
+  const clientName = escapeHtml(params.clientName);
+  const serviceName = escapeHtml(params.serviceName);
+  const orderCode = escapeHtml(params.orderCode);
   const html = `
-    <p>Ola, ${params.clientName},</p>
-    <p>Confirmamos a conclusao do atendimento de <strong>${params.serviceName}</strong> realizado em ${dateLabel}, referente a OS ${params.orderCode}.</p>
+    <p>Ola, ${clientName},</p>
+    <p>Confirmamos a conclusao do atendimento de <strong>${serviceName}</strong> realizado em ${dateLabel}, referente a OS ${orderCode}.</p>
     <p>Obrigado por confiar na LeeveLimpeza.</p>
   `;
   return sendViaSmtp({ to: params.clientEmail, subject: `Atendimento concluido - OS ${params.orderCode}`, html });

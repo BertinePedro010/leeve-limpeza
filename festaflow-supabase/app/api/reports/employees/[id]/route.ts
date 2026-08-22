@@ -17,7 +17,9 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
     const appointments = await prisma.appointment.findMany({
       where: { employeeId: id, date: { gte: from, lte: to } },
       include: {
-        order: { select: { id: true, code: true, totalAmount: true, client: { select: { name: true } }, items: { include: { service: true } } } },
+        // `items`/`service` intentionally not selected - ReportsView's
+        // "employee" report only reads order.client.name and order.code.
+        order: { select: { id: true, code: true, totalAmount: true, client: { select: { name: true } } } },
       },
       orderBy: [{ date: "asc" }, { startTime: "asc" }],
     });

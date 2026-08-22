@@ -14,21 +14,31 @@ export async function GET(request: Request) {
     const status = url.searchParams.get("status");
     const paymentMethod = url.searchParams.get("paymentMethod");
 
-    const orders = await prisma.serviceOrder.findMany({
-      where: {
-        deletedAt: null,
-        branchId: branchFilter,
-        createdAt: { gte: from, lte: to },
-        ...(status ? { status: status as never } : {}),
-        ...(paymentMethod ? { paymentMethod: paymentMethod as never } : {}),
-      },
-      include: {
-        client: { select: { name: true } },
-        branch: { select: { name: true } },
-        appointments: { select: { status: true } },
-      },
-      orderBy: { createdAt: "desc" },
-    });
+    // Neither query depends on the other's result - run in parallel instead
+    // of two sequential round-trips.
+    const [orders, transactions] = await Promise.all([
+      prisma.serviceOrder.findMany({
+        where: {
+          deletedAt: null,
+          branchId: branchFilter,
+          createdAt: { gte: from, lte: to },
+          ...(status ? { status: status as never } : {}),
+          ...(paymentMethod ? { paymentMethod: paymentMethod as never } : {}),
+        },
+        include: {
+          client: { select: { name: true } },
+          branch: { select: { name: true } },
+          appointments: { select: { status: true } },
+        },
+        orderBy: { createdAt: "desc" },
+      }),
+      // Same summation rule as /api/dashboard (lib/billing.ts) - realized
+      // revenue (transactions, not OS totals) for the same branch/period, so
+      // this report's faturamento total can never drift from the Dashboard's.
+      prisma.transaction.findMany({
+        where: { deletedAt: null, branchId: branchFilter, type: "receita", status: "pago", paidAt: { gte: from, lte: to } },
+      }),
+    ]);
 
     const data = orders.map((o) => ({
       code: o.code,
@@ -43,12 +53,6 @@ export async function GET(request: Request) {
       updatedAt: o.updatedAt,
     }));
 
-    // Same summation rule as /api/dashboard (lib/billing.ts) - realized
-    // revenue (transactions, not OS totals) for the same branch/period, so
-    // this report's faturamento total can never drift from the Dashboard's.
-    const transactions = await prisma.transaction.findMany({
-      where: { deletedAt: null, branchId: branchFilter, type: "receita", status: "pago", paidAt: { gte: from, lte: to } },
-    });
     const faturamento = sumRevenue(transactions);
 
     return ok(serialize({ period: { from, to }, faturamento, data }));

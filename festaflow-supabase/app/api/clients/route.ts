@@ -8,10 +8,12 @@ export async function GET(request: Request) {
     const auth = await requireAuth();
     requireModule(auth, "clients");
     const branchId = new URL(request.url).searchParams.get("branchId");
+    // `orders` intentionally not included - the frontend Client type has no
+    // `orders` field and never reads it; embedding every client's full order
+    // history here was pure payload weight.
     const data = await prisma.client.findMany({
       where: { deletedAt: null, branchId: resolveBranchFilter(auth, branchId) },
       orderBy: { name: "asc" },
-      include: { orders: true },
     });
     return ok(serialize(data));
   } catch (error) {

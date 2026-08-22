@@ -1,36 +1,33 @@
 "use client";
 
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useState } from "react";
 import { api, Modal, CrudShell, Input } from "@/components/ui";
+import { useBranch } from "@/lib/branch-context";
 
 type Branch = { id: string; name: string; city: string; state: string; active: boolean };
 const blank = { name: "", city: "", state: "", active: true };
 
 export default function BranchesView() {
-  const [branches, setBranches] = useState<Branch[]>([]);
+  // Reuses the app-wide BranchContext list instead of keeping its own copy
+  // fetched from the same /api/branches endpoint; refetch() re-pulls that
+  // shared list after a create/edit so this screen still reflects its own
+  // writes immediately.
+  const { branches, refetch } = useBranch();
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<Branch | null>(null);
   const [form, setForm] = useState(blank);
   const [error, setError] = useState("");
-  const [loadError, setLoadError] = useState("");
-
-  async function load() {
-    try { setBranches(await api<Branch[]>("/api/branches")); setLoadError(""); }
-    catch (err) { setLoadError(err instanceof Error ? err.message : "Erro ao carregar filiais."); }
-  }
-  useEffect(() => { load(); }, []);
 
   async function submit(e: FormEvent) {
     e.preventDefault(); setError("");
     try {
       await api(editing ? `/api/branches/${editing.id}` : "/api/branches", { method: editing ? "PUT" : "POST", body: JSON.stringify(form) });
-      setOpen(false); setEditing(null); await load();
+      setOpen(false); setEditing(null); await refetch();
     } catch (err) { setError(err instanceof Error ? err.message : "Erro ao salvar filial."); }
   }
 
   return <div className="space-y-5">
     <p className="text-sm text-slate-500">Cadastro de filiais/cidades. Visivel apenas para o administrador global (acesso a todas as filiais).</p>
-    {loadError && <p className="rounded-xl bg-rose-50 p-3 text-sm font-bold text-rose-600">{loadError}</p>}
     <CrudShell title="Filiais" onNew={() => { setEditing(null); setError(""); setForm(blank); setOpen(true); }}>
       {branches.map((b) => <div key={b.id} className="rounded-2xl border bg-white p-5 shadow-sm">
         <div className="flex flex-wrap justify-between gap-2"><h3 className="font-black">{b.name}</h3><button onClick={() => { setEditing(b); setError(""); setForm({ name: b.name, city: b.city, state: b.state, active: b.active }); setOpen(true); }} className="text-sm font-bold text-indigo-600">Editar</button></div>

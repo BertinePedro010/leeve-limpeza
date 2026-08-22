@@ -1,8 +1,8 @@
 "use client";
 
-import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from "react";
 
-type Branch = { id: string; name: string; city: string; state: string };
+type Branch = { id: string; name: string; city: string; state: string; active: boolean };
 
 type BranchContextValue = {
   branches: Branch[];
@@ -10,6 +10,11 @@ type BranchContextValue = {
   activeBranch: Branch | null;
   setActiveBranchId: (id: string) => void;
   loading: boolean;
+  // Re-fetches /api/branches and updates `branches` in place, without
+  // touching activeBranchId - lets screens that mutate branches (BranchesView)
+  // refresh the shared list after a create/edit instead of keeping their own
+  // parallel copy fetched from the same endpoint.
+  refetch: () => Promise<void>;
 };
 
 const STORAGE_KEY = "leeveLimpeza:activeBranchId";
@@ -20,13 +25,18 @@ export function BranchProvider({ children }: { children: ReactNode }) {
   const [activeBranchId, setActiveBranchIdState] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
+  const fetchBranches = useCallback(async (): Promise<Branch[]> => {
+    const res = await fetch("/api/branches");
+    const data: Branch[] = res.ok ? await res.json().catch(() => []) : [];
+    setBranches(data);
+    return data;
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
     async function load() {
-      const res = await fetch("/api/branches");
-      const data: Branch[] = res.ok ? await res.json().catch(() => []) : [];
+      const data = await fetchBranches();
       if (cancelled) return;
-      setBranches(data);
       const stored = localStorage.getItem(STORAGE_KEY);
       const restored = data.find((b) => b.id === stored);
       const next = restored?.id ?? data[0]?.id ?? null;
@@ -37,7 +47,9 @@ export function BranchProvider({ children }: { children: ReactNode }) {
     }
     load();
     return () => { cancelled = true; };
-  }, []);
+  }, [fetchBranches]);
+
+  const refetch = useCallback(async () => { await fetchBranches(); }, [fetchBranches]);
 
   function setActiveBranchId(id: string) {
     if (!branches.some((b) => b.id === id)) return;
@@ -48,7 +60,7 @@ export function BranchProvider({ children }: { children: ReactNode }) {
   const activeBranch = branches.find((b) => b.id === activeBranchId) ?? null;
 
   return (
-    <BranchContext.Provider value={{ branches, activeBranchId, activeBranch, setActiveBranchId, loading }}>
+    <BranchContext.Provider value={{ branches, activeBranchId, activeBranch, setActiveBranchId, loading, refetch }}>
       {children}
     </BranchContext.Provider>
   );

@@ -12,8 +12,11 @@ function total(items: Array<{ quantity: number; unitPrice: number }>) {
 // "finance" module gates elsewhere - a user with only "orders" must not
 // recover that data through an order's embedded relations, so it is
 // included only when the caller can also view finance.
+// `attachments` intentionally dropped from this include - no frontend view
+// reads it (the Order type has no `attachments` field), so fetching it on
+// every order was pure payload weight with zero consumer.
 function include(canViewFinance: boolean) {
-  return { client: true, branch: { select: { id: true, name: true, city: true } }, items: { include: { service: true } }, employees: { include: { employee: true } }, attachments: true, transactions: canViewFinance, appointments: { include: { employee: { select: { id: true, name: true } } }, orderBy: [{ date: "asc" as const }, { startTime: "asc" as const }] } };
+  return { client: true, branch: { select: { id: true, name: true, city: true } }, items: { include: { service: true } }, employees: { include: { employee: true } }, transactions: canViewFinance, appointments: { include: { employee: { select: { id: true, name: true } } }, orderBy: [{ date: "asc" as const }, { startTime: "asc" as const }] } };
 }
 
 // Used by the calendar (click an appointment -> load its full order) and by

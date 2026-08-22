@@ -210,6 +210,12 @@ model ServiceOrder {
   @@index([eventDate], map: "idx_service_orders_event_date")
   @@index([status], map: "idx_service_orders_status")
   @@index([branchId], map: "idx_service_orders_branch_id")
+  // Composite indexes for /api/reports/os (branchId + createdAt range) and
+  // /api/orders (branchId filter + eventDate order) - the single-column
+  // branchId index above can't serve an equality+range query as efficiently
+  // as a composite covering both columns.
+  @@index([branchId, createdAt], map: "idx_service_orders_branch_created_at")
+  @@index([branchId, eventDate], map: "idx_service_orders_branch_event_date")
   @@map("service_orders")
 }
 
@@ -289,6 +295,9 @@ model Transaction {
   @@index([orderId], map: "idx_transactions_order_id")
   @@index([branchId], map: "idx_transactions_branch_id")
   @@index([recurringScheduleId], map: "idx_transactions_recurring_schedule_id")
+  // Serves /api/reports/os and the dashboard's revenue/expense aggregates,
+  // which filter type+status+paidAt range - no index covered paidAt before.
+  @@index([paidAt], map: "idx_transactions_paid_at")
   @@map("transactions")
 }
 
@@ -319,6 +328,12 @@ model Appointment {
   @@index([branchId, date], map: "idx_appointments_branch_date")
   @@index([orderId], map: "idx_appointments_order_id")
   @@index([status], map: "idx_appointments_status")
+  // employeeId is a FK filtered directly in reports/employees[/id] and the
+  // appointments list route, with no prior index at all.
+  @@index([employeeId], map: "idx_appointments_employee_id")
+  // Serves reports/cancellations' cancelledAt range filter (combined with
+  // status="cancelado", already covered by idx_appointments_status).
+  @@index([cancelledAt], map: "idx_appointments_cancelled_at")
   @@map("appointments")
 }
 
