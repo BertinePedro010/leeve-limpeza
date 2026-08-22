@@ -47,3 +47,26 @@ export const userCreateSchema = z.object({ name: z.string().min(2), email: z.str
 // boolean, so this only matters for a caller bypassing the UI).
 export const userUpdateSchema = z.object({ name: z.string().min(2), role: userRoleEnum, active: z.boolean(), branchIds: z.array(z.string().uuid()).default([]), allowedModules: z.array(moduleNameEnum).default([]) });
 export const userResetPasswordSchema = z.object({ password: z.string().min(8) });
+
+// Maps the first failing field of orderSchema to a specific, actionable
+// message instead of a generic "OS invalida." - the frontend uses the
+// returned field name to scroll to and highlight the exact control that
+// needs fixing (see components/SaasApp.tsx OrderFormModal).
+const orderFieldMessages: Record<string, string> = {
+  clientId: "Selecione o cliente.",
+  eventDate: "Informe a data do evento.",
+  startTime: "Informe o horario de inicio do atendimento.",
+  endTime: "Informe o horario de termino do atendimento.",
+  location: "Informe o local do atendimento.",
+  status: "Selecione um status valido.",
+  items: "Adicione ao menos um servico a OS.",
+  employeeIds: "Verifique os funcionarios selecionados.",
+};
+
+export function orderValidationError(error: z.ZodError): { message: string; field?: string } {
+  const issue = error.issues[0];
+  const field = issue ? String(issue.path[0] ?? "") : "";
+  const message = orderFieldMessages[field];
+  if (message) return { message, field };
+  return { message: issue ? issue.message : "Nao foi possivel validar a OS." };
+}

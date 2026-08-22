@@ -1,6 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { requireAuth, requireModule, assertRecordBranchAccess, assertBranchAccess, AuthzError, handleAuthzError } from "@/lib/authz";
-import { orderSchema } from "@/lib/validators";
+import { orderSchema, orderValidationError } from "@/lib/validators";
 import { syncOrderBilling } from "@/lib/billing";
 import { fail, ok, serialize } from "@/lib/json";
 
@@ -63,7 +63,7 @@ export async function PUT(request: Request, { params }: { params: Promise<{ id: 
     const existing = await prisma.serviceOrder.findUnique({ where: { id } });
     assertRecordBranchAccess(auth, existing, "OS nao encontrada.");
     const parsed = orderSchema.safeParse(await request.json());
-    if (!parsed.success) return fail("OS invalida.", 422);
+    if (!parsed.success) { const { message, field } = orderValidationError(parsed.error); return fail(message, 422, field); }
     const canViewFinance = auth.profile.role === "admin" || auth.profile.allowedModules.includes("finance");
     const branchId = parsed.data.branchId ?? existing.branchId;
     if (branchId !== existing.branchId) assertBranchAccess(auth, branchId);

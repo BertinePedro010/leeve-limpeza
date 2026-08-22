@@ -1,7 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import type { Prisma } from "@prisma/client";
 import { requireAuth, requireModule, resolveBranchIdForCreate, resolveBranchFilter, AuthzError, handleAuthzError } from "@/lib/authz";
-import { orderSchema } from "@/lib/validators";
+import { orderSchema, orderValidationError } from "@/lib/validators";
 import { syncOrderBilling } from "@/lib/billing";
 import { fail, ok, serialize } from "@/lib/json";
 
@@ -74,7 +74,7 @@ export async function POST(request: Request) {
     const auth = await requireAuth();
     requireModule(auth, "orders");
     const parsed = orderSchema.safeParse(await request.json());
-    if (!parsed.success) return fail("OS invalida.", 422);
+    if (!parsed.success) { const { message, field } = orderValidationError(parsed.error); return fail(message, 422, field); }
     const canViewFinance = auth.profile.role === "admin" || auth.profile.allowedModules.includes("finance");
     const branchId = resolveBranchIdForCreate(auth, parsed.data.branchId);
     const { items, employeeIds, dates, branchId: _branchId, ...body } = parsed.data;

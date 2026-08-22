@@ -3,7 +3,7 @@
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 import { BranchProvider, useBranch } from "@/lib/branch-context";
-import { statusLabels, money, dateOnly, dateOnlyLabel, api, Badge, Modal, Stat, CrudShell, ActionButtons, Input, NumberInput, Text, Select, Save, paymentMethodLabel, paymentMethodOptions, EmployeeMultiSelect } from "@/components/ui";
+import { statusLabels, money, dateOnly, dateOnlyLabel, api, ApiError, Badge, Modal, Stat, CrudShell, ActionButtons, Input, NumberInput, Text, Select, Save, paymentMethodLabel, paymentMethodOptions, EmployeeMultiSelect } from "@/components/ui";
 import ReportsView from "@/components/ReportsView";
 import BranchesView from "@/components/BranchesView";
 import UsersView from "@/components/UsersView";
@@ -154,8 +154,23 @@ function OrderFormModal({ order, orders, clients, employees, services, branchId,
   const [form, setForm] = useState(() => (order ? fromOrder(order) : blank));
   const [serviceId, setServiceId] = useState(services[0]?.id || "");
   const [error, setError] = useState("");
+  const [errorField, setErrorField] = useState("");
+  const [success, setSuccess] = useState("");
+  const [saving, setSaving] = useState(false);
   const [extraDates, setExtraDates] = useState<string[]>([]); const [newDate, setNewDate] = useState("");
   const total = form.items.reduce((s, i) => s + i.quantity * Number(i.unitPrice), 0);
+
+  // Scrolls to and focuses the field named by the server's `field` hint (or
+  // "items" for the services section, which has no single input) so a
+  // validation error always lands the user exactly where it needs fixing,
+  // instead of just a banner they have to hunt from.
+  function focusField(field?: string) {
+    if (!field) return;
+    const el = document.getElementById(`os-field-${field}`);
+    if (!el) return;
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    if (el instanceof HTMLElement) el.focus();
+  }
 
   // Keeps `current` (and the AppointmentsSection it feeds) fresh after any
   // action taken on a sibling appointment, without closing the modal - the
@@ -167,13 +182,43 @@ function OrderFormModal({ order, orders, clients, employees, services, branchId,
   function removeDate(d: string) { setExtraDates(extraDates.filter((x) => x !== d)); }
 
   async function submit(e: FormEvent) {
-    e.preventDefault(); setError("");
+    e.preventDefault(); setError(""); setErrorField(""); setSuccess("");
+    // Same rule the server enforces (orderSchema: items.min(1)) - checked
+    // client-side first so an empty service list is caught instantly, with
+    // the same field-highlight treatment as a server-side validation error,
+    // instead of round-tripping to the API just to get told the same thing.
+    if (form.items.length === 0) {
+      setError("Nao foi possivel salvar. Adicione ao menos um servico a OS.");
+      setErrorField("items");
+      focusField("items");
+      return;
+    }
+    setSaving(true);
     try {
       const payload = current ? form : { ...form, branchId, ...(extraDates.length ? { dates: [form.eventDate, ...extraDates] } : {}) };
       await api(current ? `/api/orders/${current.id}` : "/api/orders", { method: current ? "PUT" : "POST", body: JSON.stringify(payload) });
+      // Reload first (re-fetches orders + confirms the server actually
+      // persisted the change) - onClose only runs once that's confirmed, so
+      // the modal never closes on an unconfirmed save.
       await reload();
-      onClose();
-    } catch (err) { setError(err instanceof Error ? err.message : "Erro ao salvar OS."); }
+      setSuccess("Alteracoes salvas com sucesso.");
+      setTimeout(onClose, 900);
+    } catch (err) {
+      const field = err instanceof ApiError ? err.field : undefined;
+      setError(err instanceof Error ? err.message : "Erro ao salvar OS.");
+      setErrorField(field || "");
+      focusField(field);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function addAppointment(date: string, startTime: string, endTime: string) {
+    if (!current) return;
+    try {
+      await api("/api/appointments", { method: "POST", body: JSON.stringify({ orderId: current.id, dates: [date], startTime, endTime }) });
+      await reload();
+    } catch (err) { alert(err instanceof Error ? err.message : "Erro ao adicionar atendimento."); }
   }
 
   async function cancelAppointment(id: string) {
@@ -195,11 +240,19 @@ function OrderFormModal({ order, orders, clients, employees, services, branchId,
     catch (err) { alert(err instanceof Error ? err.message : "Erro ao atribuir funcionario."); }
   }
 
-  return <Modal title={current ? `Editar OS ${current.code}` : "Nova OS"} onClose={onClose}><form onSubmit={submit} className="space-y-4">{error && <p className="rounded-xl bg-rose-50 p-3 text-sm font-bold text-rose-600">{error}</p>}<div className="grid gap-3 md:grid-cols-3"><Select value={form.clientId} set={(v) => setForm({ ...form, clientId: v })} options={clients.map((c) => [c.id, c.name])} /><Input type="date" label="Data" value={form.eventDate} set={(v) => setForm({ ...form, eventDate: v })} /><Select value={form.status} set={(v) => setForm({ ...form, status: v })} options={[["pendente", "Pendente"], ["confirmado", "Confirmado"], ["em_andamento", "Em andamento"], ["finalizado", "Finalizado"], ["cancelado", "Cancelado"]]} /><Input label="Inicio" value={form.startTime} set={(v) => setForm({ ...form, startTime: v })} /><Input label="Fim" value={form.endTime} set={(v) => setForm({ ...form, endTime: v })} /><label className="grid gap-1 text-xs font-black uppercase text-slate-500">Pagamento<Select value={form.paymentMethod} set={(v) => setForm({ ...form, paymentMethod: v })} options={paymentMethodOptions} /></label></div>{current?.paymentMethodLegacy && !current.paymentMethod && <p className="text-xs text-slate-400">Valor legado registrado anteriormente: <b>{current.paymentMethodLegacy}</b> (selecione uma opcao acima para substituir por um valor controlado).</p>}<Input label="Local" value={form.location} set={(v) => setForm({ ...form, location: v })} required />{!current && <div className="rounded-2xl bg-slate-50 p-4"><h4 className="font-black">Datas adicionais (opcional)</h4><p className="text-xs text-slate-500">Cria um atendimento para a data principal acima e mais um para cada data adicionada aqui, todos na mesma OS.</p><div className="mt-3 flex gap-2"><input type="date" value={newDate} onChange={(e) => setNewDate(e.target.value)} className="rounded-xl border p-3" /><button type="button" onClick={addDate} className="rounded-xl bg-slate-950 px-4 font-black text-white">Adicionar data</button></div>{extraDates.length > 0 && <div className="mt-3 flex flex-wrap gap-2">{extraDates.map((d) => <span key={d} className="flex items-center gap-2 rounded-full bg-indigo-50 px-3 py-1 text-xs font-bold text-indigo-700">{new Date(d).toLocaleDateString("pt-BR")}<button type="button" onClick={() => removeDate(d)} className="text-rose-600">x</button></span>)}</div>}</div>}<div className="rounded-2xl bg-slate-50 p-4"><h4 className="font-black">Servicos contratados</h4><div className="mt-3 flex flex-wrap gap-2"><select value={serviceId} onChange={(e) => setServiceId(e.target.value)} className="w-full rounded-xl border p-3">{services.map((s) => <option key={s.id} value={s.id}>{s.name} - {money(s.price)}</option>)}</select><button type="button" onClick={addService} className="rounded-xl bg-slate-950 px-4 font-black text-white">Adicionar</button></div>{form.items.map((i, idx) => <div key={idx} className="mt-2 flex flex-wrap items-center gap-2 rounded-xl bg-white p-3"><span className="min-w-0 flex-1 break-words">{services.find((s) => s.id === i.serviceId)?.name}</span><input type="number" min={1} value={i.quantity} onChange={(e) => setForm({ ...form, items: form.items.map((x, n) => n === idx ? { ...x, quantity: Number(e.target.value) } : x) })} className="w-16 shrink-0 rounded border p-2" /><b className="shrink-0">{money(i.quantity * Number(i.unitPrice))}</b><button type="button" onClick={() => setForm({ ...form, items: form.items.filter((_, n) => n !== idx) })} className="shrink-0 font-bold text-rose-600">Remover</button></div>)}<p className="mt-3 text-right text-lg font-black">Total: {money(total)}</p></div><EmployeeMultiSelect employees={employees} selected={form.employeeIds} onChange={(ids) => setForm({ ...form, employeeIds: ids })} /><Text label="Observacoes" value={form.notes} set={(v) => setForm({ ...form, notes: v })} /><Input label="Assinatura" value={form.signatureName} set={(v) => setForm({ ...form, signatureName: v })} />{current && <AppointmentsSection appointments={current.appointments} employees={employees} onCancel={cancelAppointment} onComplete={completeAppointment} onReschedule={rescheduleAppointment} onAssign={assignEmployee} />}<Save /></form></Modal>;
+  return <Modal title={current ? `Editar OS ${current.code}` : "Nova OS"} onClose={onClose}><form onSubmit={submit} className="space-y-4">{success && <p className="rounded-xl bg-emerald-50 p-3 text-sm font-bold text-emerald-700">{success}</p>}{error && <p className="rounded-xl bg-rose-50 p-3 text-sm font-bold text-rose-600">{error}</p>}<div className="grid gap-3 md:grid-cols-3"><Select id="os-field-clientId" error={errorField === "clientId"} value={form.clientId} set={(v) => setForm({ ...form, clientId: v })} options={clients.map((c) => [c.id, c.name])} /><Input id="os-field-eventDate" error={errorField === "eventDate"} type="date" label="Data" value={form.eventDate} set={(v) => setForm({ ...form, eventDate: v })} /><Select id="os-field-status" error={errorField === "status"} value={form.status} set={(v) => setForm({ ...form, status: v })} options={[["pendente", "Pendente"], ["confirmado", "Confirmado"], ["em_andamento", "Em andamento"], ["finalizado", "Finalizado"], ["cancelado", "Cancelado"]]} /><Input id="os-field-startTime" error={errorField === "startTime"} label="Inicio" value={form.startTime} set={(v) => setForm({ ...form, startTime: v })} /><Input id="os-field-endTime" error={errorField === "endTime"} label="Fim" value={form.endTime} set={(v) => setForm({ ...form, endTime: v })} /><label className="grid gap-1 text-xs font-black uppercase text-slate-500">Pagamento<Select value={form.paymentMethod} set={(v) => setForm({ ...form, paymentMethod: v })} options={paymentMethodOptions} /></label></div>{current?.paymentMethodLegacy && !current.paymentMethod && <p className="text-xs text-slate-400">Valor legado registrado anteriormente: <b>{current.paymentMethodLegacy}</b> (selecione uma opcao acima para substituir por um valor controlado).</p>}<Input id="os-field-location" error={errorField === "location"} label="Local" value={form.location} set={(v) => setForm({ ...form, location: v })} required />{!current && <div className="rounded-2xl bg-slate-50 p-4"><h4 className="font-black">Datas adicionais (opcional)</h4><p className="text-xs text-slate-500">Cria um atendimento para a data principal acima e mais um para cada data adicionada aqui, todos na mesma OS.</p><div className="mt-3 flex gap-2"><input type="date" value={newDate} onChange={(e) => setNewDate(e.target.value)} className="rounded-xl border p-3" /><button type="button" onClick={addDate} className="rounded-xl bg-slate-950 px-4 font-black text-white">Adicionar data</button></div>{extraDates.length > 0 && <div className="mt-3 flex flex-wrap gap-2">{extraDates.map((d) => <span key={d} className="flex items-center gap-2 rounded-full bg-indigo-50 px-3 py-1 text-xs font-bold text-indigo-700">{new Date(d).toLocaleDateString("pt-BR")}<button type="button" onClick={() => removeDate(d)} className="text-rose-600">x</button></span>)}</div>}</div>}<div id="os-field-items" tabIndex={-1} className={`rounded-2xl bg-slate-50 p-4 ${errorField === "items" ? "ring-2 ring-rose-500" : ""}`}><h4 className="font-black">Servicos contratados</h4><div className="mt-3 flex flex-wrap gap-2"><select value={serviceId} onChange={(e) => setServiceId(e.target.value)} className="w-full rounded-xl border p-3">{services.map((s) => <option key={s.id} value={s.id}>{s.name} - {money(s.price)}</option>)}</select><button type="button" onClick={addService} className="rounded-xl bg-slate-950 px-4 font-black text-white">Adicionar</button></div>{form.items.map((i, idx) => <div key={idx} className="mt-2 flex flex-wrap items-center gap-2 rounded-xl bg-white p-3"><span className="min-w-0 flex-1 break-words">{services.find((s) => s.id === i.serviceId)?.name}</span><input type="number" min={1} value={i.quantity} onChange={(e) => setForm({ ...form, items: form.items.map((x, n) => n === idx ? { ...x, quantity: Number(e.target.value) } : x) })} className="w-16 shrink-0 rounded border p-2" /><b className="shrink-0">{money(i.quantity * Number(i.unitPrice))}</b><button type="button" onClick={() => setForm({ ...form, items: form.items.filter((_, n) => n !== idx) })} className="shrink-0 font-bold text-rose-600">Remover</button></div>)}<p className="mt-3 text-right text-lg font-black">Total: {money(total)}</p></div><EmployeeMultiSelect employees={employees} selected={form.employeeIds} onChange={(ids) => setForm({ ...form, employeeIds: ids })} /><Text label="Observacoes" value={form.notes} set={(v) => setForm({ ...form, notes: v })} /><Input label="Assinatura" value={form.signatureName} set={(v) => setForm({ ...form, signatureName: v })} />{current && <AppointmentsSection appointments={current.appointments} employees={employees} onCancel={cancelAppointment} onComplete={completeAppointment} onReschedule={rescheduleAppointment} onAssign={assignEmployee} onAdd={addAppointment} />}<button disabled={saving} className="rounded-xl bg-indigo-600 p-3 font-black text-white disabled:opacity-60">{saving ? "Salvando..." : "Salvar"}</button></form></Modal>;
 }
 
-function AppointmentsSection({ appointments, employees, onCancel, onComplete, onReschedule, onAssign }: { appointments: Appointment[]; employees: Employee[]; onCancel: (id: string) => void; onComplete: (id: string) => void; onReschedule: (id: string, date: string, startTime: string, endTime: string) => void; onAssign: (id: string, employeeId: string) => void }) {
-  return <div className="rounded-2xl bg-slate-50 p-4"><h4 className="font-black">Atendimentos ({appointments.length})</h4><div className="mt-3 space-y-2">{appointments.map((a) => <AppointmentRow key={a.id} appointment={a} employees={employees} onCancel={onCancel} onComplete={onComplete} onReschedule={onReschedule} onAssign={onAssign} />)}</div></div>;
+function AppointmentsSection({ appointments, employees, onCancel, onComplete, onReschedule, onAssign, onAdd }: { appointments: Appointment[]; employees: Employee[]; onCancel: (id: string) => void; onComplete: (id: string) => void; onReschedule: (id: string, date: string, startTime: string, endTime: string) => void; onAssign: (id: string, employeeId: string) => void; onAdd: (date: string, startTime: string, endTime: string) => void }) {
+  const [adding, setAdding] = useState(false);
+  const [date, setDate] = useState(dateOnly());
+  const [startTime, setStartTime] = useState("18:00");
+  const [endTime, setEndTime] = useState("23:59");
+  return <div className="rounded-2xl bg-slate-50 p-4">
+    <div className="flex flex-wrap items-center justify-between gap-2"><h4 className="font-black">Atendimentos ({appointments.length})</h4><button type="button" onClick={() => setAdding((v) => !v)} className="text-xs font-bold text-indigo-600">{adding ? "Cancelar" : "+ Adicionar atendimento"}</button></div>
+    {adding && <div className="mt-3 flex flex-wrap items-center gap-2 rounded-xl border bg-white p-3"><input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="rounded border p-2 text-sm" /><input value={startTime} onChange={(e) => setStartTime(e.target.value)} className="w-20 rounded border p-2 text-sm" /><input value={endTime} onChange={(e) => setEndTime(e.target.value)} className="w-20 rounded border p-2 text-sm" /><button type="button" onClick={() => { onAdd(date, startTime, endTime); setAdding(false); }} className="text-sm font-bold text-indigo-600">Adicionar</button></div>}
+    <div className="mt-3 space-y-2">{appointments.map((a) => <AppointmentRow key={a.id} appointment={a} employees={employees} onCancel={onCancel} onComplete={onComplete} onReschedule={onReschedule} onAssign={onAssign} />)}</div>
+  </div>;
 }
 
 function AppointmentRow({ appointment, employees, onCancel, onComplete, onReschedule, onAssign }: { appointment: Appointment; employees: Employee[]; onCancel: (id: string) => void; onComplete: (id: string) => void; onReschedule: (id: string, date: string, startTime: string, endTime: string) => void; onAssign: (id: string, employeeId: string) => void }) {

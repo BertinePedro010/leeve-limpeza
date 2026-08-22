@@ -24,10 +24,21 @@ export function paymentMethodLabel(order: { paymentMethod?: string | null; payme
   return "-";
 }
 
+// Carries the server's `field` hint (see lib/json.ts fail()) alongside the
+// message, so a form can scroll to and highlight the exact control that
+// failed validation instead of only showing a generic error banner.
+export class ApiError extends Error {
+  field?: string;
+  constructor(message: string, field?: string) {
+    super(message);
+    this.field = field;
+  }
+}
+
 export async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
   const res = await fetch(path, { ...options, headers: { "Content-Type": "application/json", ...(options.headers || {}) } });
   const data = await res.json().catch(() => null);
-  if (!res.ok) throw new Error(data?.message || "Erro na API");
+  if (!res.ok) throw new ApiError(data?.message || "Erro na API", data?.field);
   return data;
 }
 
@@ -51,8 +62,8 @@ export function CrudShell({ title, onNew, children }: { title: string; onNew: ()
 export function ActionButtons({ onEdit, onDelete }: { onEdit: () => void; onDelete: () => void }) {
   return <div><button onClick={onEdit} className="mr-2 text-sm font-bold text-indigo-600">Editar</button><button onClick={onDelete} className="text-sm font-bold text-rose-600">Excluir</button></div>;
 }
-export function Input({ label, value, set, required, type = "text" }: { label: string; value: string; set: (v: string) => void; required?: boolean; type?: string }) {
-  return <label className="grid gap-1 text-xs font-black uppercase text-slate-500">{label}<input type={type} required={required} value={value} onChange={(e) => set(e.target.value)} className="rounded-xl border p-3 text-sm font-normal normal-case text-slate-800" /></label>;
+export function Input({ label, value, set, required, type = "text", id, error }: { label: string; value: string; set: (v: string) => void; required?: boolean; type?: string; id?: string; error?: boolean }) {
+  return <label className="grid gap-1 text-xs font-black uppercase text-slate-500">{label}<input id={id} type={type} required={required} value={value} onChange={(e) => set(e.target.value)} className={`rounded-xl border p-3 text-sm font-normal normal-case text-slate-800 ${error ? "border-rose-500 ring-1 ring-rose-500" : ""}`} /></label>;
 }
 export function NumberInput({ label, value, set }: { label: string; value: number; set: (v: number) => void }) {
   return <label className="grid gap-1 text-xs font-black uppercase text-slate-500">{label}<input type="number" step="0.01" value={value} onChange={(e) => set(Number(e.target.value))} className="rounded-xl border p-3 text-sm font-normal text-slate-800" /></label>;
@@ -60,8 +71,8 @@ export function NumberInput({ label, value, set }: { label: string; value: numbe
 export function Text({ label, value, set }: { label: string; value: string; set: (v: string) => void }) {
   return <label className="grid gap-1 text-xs font-black uppercase text-slate-500">{label}<textarea value={value} onChange={(e) => set(e.target.value)} className="rounded-xl border p-3 text-sm font-normal normal-case text-slate-800" /></label>;
 }
-export function Select({ value, set, options }: { value: string; set: (v: string) => void; options: Array<[string, string] | string[]> }) {
-  return <select value={value} onChange={(e) => set(e.target.value)} className="rounded-xl border p-3 text-sm">{options.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select>;
+export function Select({ value, set, options, id, error }: { value: string; set: (v: string) => void; options: Array<[string, string] | string[]>; id?: string; error?: boolean }) {
+  return <select id={id} value={value} onChange={(e) => set(e.target.value)} className={`rounded-xl border p-3 text-sm ${error ? "border-rose-500 ring-1 ring-rose-500" : ""}`}>{options.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select>;
 }
 export function Save() {
   return <button className="rounded-xl bg-indigo-600 p-3 font-black text-white">Salvar</button>;
