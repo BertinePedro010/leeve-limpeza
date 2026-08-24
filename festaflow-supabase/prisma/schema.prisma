@@ -44,6 +44,16 @@ enum PaymentMethod {
   cash
 }
 
+enum SendChannel {
+  email
+  whatsapp
+}
+
+enum SendStatus {
+  sent
+  failed
+}
+
 model Branch {
   id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   name      String   @unique @db.VarChar(120)
@@ -61,6 +71,7 @@ model Branch {
   transactions       Transaction[]
   appointments       Appointment[]
   recurringSchedules RecurringSchedule[]
+  orderSendLogs      OrderSendLog[]
 
   @@map("branches")
 }
@@ -99,6 +110,7 @@ model Profile {
 
   branches      UserBranch[]
   createdOrders ServiceOrder[] @relation("ServiceOrderCreatedBy")
+  orderSendLogs OrderSendLog[]
 
   @@index([email], map: "idx_profiles_email")
   @@map("profiles")
@@ -205,6 +217,7 @@ model ServiceOrder {
   transactions       Transaction[]
   appointments       Appointment[]
   recurringSchedules RecurringSchedule[]
+  sendLogs           OrderSendLog[]
 
   @@index([clientId], map: "idx_service_orders_client_id")
   @@index([eventDate], map: "idx_service_orders_event_date")
@@ -368,4 +381,29 @@ model RecurringSchedule {
   @@index([branchId], map: "idx_recurring_schedules_branch_id")
   @@index([active], map: "idx_recurring_schedules_active")
   @@map("recurring_schedules")
+}
+
+// Minimal, append-only audit trail for "send OS" actions (email/WhatsApp).
+// Never stores SMTP credentials, message bodies, or PDF content - only who
+// sent what, to whom (address/number), when, and whether it succeeded.
+// `recipient` is deliberately not unique/foreign-keyed to Client.email: the
+// send-OS modal lets the user type any destination address/number.
+model OrderSendLog {
+  id           String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orderId      String      @map("order_id") @db.Uuid
+  branchId     String      @map("branch_id") @db.Uuid
+  channel      SendChannel
+  recipient    String      @db.VarChar(255)
+  status       SendStatus
+  errorMessage String?     @map("error_message") @db.Text
+  sentBy       String?     @map("sent_by") @db.Uuid
+  createdAt    DateTime    @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  order         ServiceOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  branch        Branch       @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  sentByProfile Profile?     @relation(fields: [sentBy], references: [id], onDelete: SetNull)
+
+  @@index([orderId], map: "idx_order_send_logs_order_id")
+  @@index([branchId], map: "idx_order_send_logs_branch_id")
+  @@map("order_send_logs")
 }

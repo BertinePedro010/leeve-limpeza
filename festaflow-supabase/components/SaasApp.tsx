@@ -7,6 +7,7 @@ import { statusLabels, money, dateOnly, dateOnlyLabel, api, ApiError, Badge, Mod
 import ReportsView from "@/components/ReportsView";
 import BranchesView from "@/components/BranchesView";
 import UsersView from "@/components/UsersView";
+import { normalizeWhatsappPhone, buildOrderWhatsappMessage, buildWhatsappShareUrl } from "@/lib/whatsapp";
 
 type Tab = "dashboard" | "clients" | "employees" | "services" | "orders" | "calendar" | "finance" | "reports" | "branches" | "users";
 export type Client = { id: string; name: string; email?: string; phone?: string; document?: string; address?: string; notes?: string };
@@ -20,6 +21,7 @@ type Order = { id: string; code: string; clientId: string; client?: Client; bran
 type Transaction = { id: string; type: "receita" | "despesa"; category: string; description: string; amount: string | number; dueDate: string; paidAt?: string; status: "pago" | "pendente"; orderId?: string; paymentMethod?: string | null; isAutoRevenue?: boolean };
 type Dashboard = { revenue: number; expenses: number; profit: number; receivable: number; payable: number; clients: number; employees: number; services: number; orders: number; activeOrders: number; completedOrders: number; upcomingOrders: Order[] };
 type Me = { id: string; name: string; email: string; role: string; allowedModules: string[]; isGlobalAdmin: boolean };
+type SendChannel = "email" | "whatsapp";
 
 const nav: Array<[Tab, string]> = [["dashboard", "Dashboard"], ["orders", "Ordens de Servico"], ["calendar", "Calendario"], ["clients", "Clientes"], ["employees", "Funcionarios"], ["services", "Servicos"], ["finance", "Financeiro"], ["reports", "Relatorios"]];
 
@@ -139,11 +141,18 @@ function ServicesView({ data, branchId, reload, loading }: { data: Service[]; br
 function OrdersView({ orders, clients, employees, services, branchId, reload, loading }: { orders: Order[]; clients: Client[]; employees: Employee[]; services: Service[]; branchId: string | null; reload: () => Promise<void>; loading: boolean }) {
   const [open, setOpen] = useState(false); const [print, setPrint] = useState<Order | null>(null); const [editing, setEditing] = useState<Order | null>(null);
   const [recurrenceOpen, setRecurrenceOpen] = useState(false);
+  const [sending, setSending] = useState<{ order: Order; channel: SendChannel } | null>(null);
 
   async function removeOrder(id: string) { if (!confirm("Excluir OS?")) return; try { await api(`/api/orders/${id}`, { method: "DELETE" }); await reload(); } catch (err) { alert(err instanceof Error ? err.message : "Erro ao excluir OS."); } }
 
   if (loading) return <p className="text-sm text-slate-500">Carregando ordens de servico...</p>;
-  return <div className="space-y-5"><div className="flex flex-wrap justify-between gap-2"><p className="text-sm text-slate-500">OS com multiplos atendimentos, recorrencia, equipe, assinatura e impressao/PDF.</p><div className="flex gap-2"><button onClick={() => setRecurrenceOpen(true)} className="rounded-xl border border-indigo-300 px-4 py-2 font-black text-indigo-600">Nova Recorrencia</button><button onClick={() => { setEditing(null); setOpen(true); }} className="rounded-xl bg-indigo-600 px-4 py-2 font-black text-white">Nova OS</button></div></div><div className="overflow-x-auto rounded-2xl border bg-white"><table className="w-full text-sm"><thead className="bg-slate-50 text-left text-xs uppercase text-slate-500"><tr><th className="p-4">Codigo</th><th className="p-4">Cliente</th><th className="hidden p-4 sm:table-cell">Data</th><th className="hidden p-4 sm:table-cell">Atendimentos</th><th className="hidden p-4 sm:table-cell">Pagamento</th><th className="p-4">Status</th><th className="p-4 text-right">Valor</th><th className="p-4 text-right">Acoes</th></tr></thead><tbody>{orders.map((o) => <tr key={o.id} className="border-t"><td className="p-4 font-mono font-black">{o.code}</td><td className="p-4">{o.client?.name}</td><td className="hidden p-4 sm:table-cell">{new Date(o.eventDate).toLocaleDateString("pt-BR")}</td><td className="hidden p-4 sm:table-cell">{o.appointments?.length ?? 0}</td><td className="hidden p-4 text-xs sm:table-cell">{paymentMethodLabel(o)}</td><td className="p-4"><Badge status={o.status} /></td><td className="p-4 text-right font-black text-indigo-600">{money(o.totalAmount)}</td><td className="p-4 text-right"><button onClick={() => setPrint(o)} className="mr-2 font-bold">PDF</button><button onClick={() => { setEditing(o); setOpen(true); }} className="mr-2 font-bold text-indigo-600">Editar</button><button onClick={() => removeOrder(o.id)} className="font-bold text-rose-600">Excluir</button></td></tr>)}</tbody></table></div>{open && <OrderFormModal order={editing} orders={orders} clients={clients} employees={employees} services={services} branchId={branchId} onClose={() => setOpen(false)} reload={reload} />}{print && <PrintOrder order={print} close={() => setPrint(null)} />}{recurrenceOpen && <RecurrenceModal clients={clients} services={services} employees={employees} branchId={branchId} close={() => setRecurrenceOpen(false)} onCreated={reload} />}</div>;
+  return <div className="space-y-5"><div className="flex flex-wrap justify-between gap-2"><p className="text-sm text-slate-500">OS com multiplos atendimentos, recorrencia, equipe, assinatura e impressao/PDF.</p><div className="flex gap-2"><button onClick={() => setRecurrenceOpen(true)} className="rounded-xl border border-indigo-300 px-4 py-2 font-black text-indigo-600">Nova Recorrencia</button><button onClick={() => { setEditing(null); setOpen(true); }} className="rounded-xl bg-indigo-600 px-4 py-2 font-black text-white">Nova OS</button></div></div><div className="overflow-x-auto rounded-2xl border bg-white"><table className="w-full text-sm"><thead className="bg-slate-50 text-left text-xs uppercase text-slate-500"><tr><th className="p-4">Codigo</th><th className="p-4">Cliente</th><th className="hidden p-4 sm:table-cell">Data</th><th className="hidden p-4 sm:table-cell">Atendimentos</th><th className="hidden p-4 sm:table-cell">Pagamento</th><th className="p-4">Status</th><th className="p-4 text-right">Valor</th><th className="p-4 text-right">Acoes</th></tr></thead><tbody>{orders.map((o) => <tr key={o.id} className="border-t"><td className="p-4 font-mono font-black">{o.code}</td><td className="p-4">{o.client?.name}</td><td className="hidden p-4 sm:table-cell">{new Date(o.eventDate).toLocaleDateString("pt-BR")}</td><td className="hidden p-4 sm:table-cell">{o.appointments?.length ?? 0}</td><td className="hidden p-4 text-xs sm:table-cell">{paymentMethodLabel(o)}</td><td className="p-4"><Badge status={o.status} /></td><td className="p-4 text-right font-black text-indigo-600">{money(o.totalAmount)}</td><td className="p-4 text-right"><div className="flex flex-wrap items-center justify-end gap-x-3 gap-y-1">
+    <button onClick={() => setPrint(o)} className="font-bold">PDF</button>
+    <button onClick={() => { setEditing(o); setOpen(true); }} className="font-bold text-indigo-600">Editar</button>
+    <button onClick={() => setSending({ order: o, channel: "email" })} className="font-bold text-emerald-600">E-mail</button>
+    <button onClick={() => setSending({ order: o, channel: "whatsapp" })} className="font-bold text-emerald-600">WhatsApp</button>
+    <button onClick={() => removeOrder(o.id)} className="font-bold text-rose-600">Excluir</button>
+  </div></td></tr>)}</tbody></table></div>{open && <OrderFormModal order={editing} orders={orders} clients={clients} employees={employees} services={services} branchId={branchId} onClose={() => setOpen(false)} reload={reload} />}{print && <PrintOrder order={print} close={() => setPrint(null)} />}{recurrenceOpen && <RecurrenceModal clients={clients} services={services} employees={employees} branchId={branchId} close={() => setRecurrenceOpen(false)} onCreated={reload} />}{sending && <SendOrderModal order={sending.order} channel={sending.channel} onClose={() => setSending(null)} />}</div>;
 }
 
 // Shared "Nova/Editar OS" form, reused by OrdersView, CalendarView (click an
@@ -296,6 +305,107 @@ function RecurrenceModal({ clients, services, employees, branchId, close, onCrea
   return <Modal title="Nova Recorrencia" onClose={close}><form onSubmit={submit} className="grid gap-3">{error && <p className="rounded-xl bg-rose-50 p-3 text-sm font-bold text-rose-600">{error}</p>}<Select value={form.clientId} set={(v) => setForm({ ...form, clientId: v })} options={clients.map((c) => [c.id, c.name])} /><Select value={form.serviceId} set={(v) => setForm({ ...form, serviceId: v })} options={services.map((s) => [s.id, `${s.name} - ${money(s.price)}`])} /><div className="grid gap-3 md:grid-cols-2"><Select value={form.frequency} set={(v) => setForm({ ...form, frequency: v })} options={[["weekly", "Semanal"], ["monthly", "Mensal"]]} /><NumberInput label={form.frequency === "weekly" ? "Repetir a cada (semanas)" : "Repetir a cada (meses)"} value={form.interval} set={(v) => setForm({ ...form, interval: v })} /></div>{form.frequency === "weekly" ? <Select value={String(form.dayOfWeek)} set={(v) => setForm({ ...form, dayOfWeek: Number(v) })} options={[["0", "Domingo"], ["1", "Segunda"], ["2", "Terca"], ["3", "Quarta"], ["4", "Quinta"], ["5", "Sexta"], ["6", "Sabado"]]} /> : <NumberInput label="Dia do mes" value={form.dayOfMonth} set={(v) => setForm({ ...form, dayOfMonth: v })} />}<div className="grid gap-3 md:grid-cols-2"><Input label="Horario inicio" value={form.startTime} set={(v) => setForm({ ...form, startTime: v })} /><Input label="Horario fim" value={form.endTime} set={(v) => setForm({ ...form, endTime: v })} /></div><NumberInput label="Valor mensal" value={form.price} set={(v) => setForm({ ...form, price: v })} /><div className="grid gap-3 md:grid-cols-2"><Input type="date" label="Data inicial" value={form.startDate} set={(v) => setForm({ ...form, startDate: v })} /><Input type="date" label="Data final (opcional)" value={form.endDate} set={(v) => setForm({ ...form, endDate: v })} /></div><Input label="Local" value={form.location} set={(v) => setForm({ ...form, location: v })} required /><EmployeeMultiSelect employees={employees} selected={form.employeeIds} onChange={(ids) => setForm({ ...form, employeeIds: ids })} /><p className="text-xs text-slate-500">Os atendimentos sao gerados automaticamente para os proximos meses e continuam sendo gerados de forma controlada enquanto a recorrencia estiver ativa.</p><Save /></form></Modal>;
 }
 
+// Downloads the server-generated PDF (lib/pdf.ts via GET /api/orders/:id/pdf)
+// as a real file - distinct from PrintOrder's window.print() flow below,
+// which stays for the browser print/physical-signature use case.
+async function downloadOrderPdf(order: Order) {
+  try {
+    const res = await fetch(`/api/orders/${order.id}/pdf`);
+    if (!res.ok) {
+      const data = await res.json().catch(() => null);
+      throw new Error(data?.message || "Erro ao baixar o PDF da OS.");
+    }
+    const blob = await res.blob();
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `OS-${order.code}.pdf`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  } catch (err) {
+    alert(err instanceof Error ? err.message : "Erro ao baixar o PDF da OS.");
+  }
+}
+
+// Shared "Enviar OS" modal for both channels, opened from OrdersView's row
+// actions and from PrintOrder. Email is a real server-side send (POST
+// /api/orders/:id/send generates the PDF + summary from DB data and mails
+// it - see app/api/orders/[id]/send/route.ts). WhatsApp only ever opens a
+// wa.me link client-side (see lib/whatsapp.ts) and best-effort logs that the
+// user did so - the UI must never claim an automatic send for it.
+function SendOrderModal({ order, channel, onClose }: { order: Order; channel: SendChannel; onClose: () => void }) {
+  const isEmail = channel === "email";
+  const [to, setTo] = useState(isEmail ? order.client?.email || "" : order.client?.phone || "");
+  const [subject, setSubject] = useState(`Ordem de Servico ${order.code} - LeeveLimpeza`);
+  const [message, setMessage] = useState("");
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState("");
+  const [success, setSuccess] = useState("");
+
+  async function logWhatsappSend(recipient: string) {
+    // Best-effort audit entry only - the WhatsApp tab has already opened
+    // regardless of whether this call succeeds, so a failure here is never
+    // surfaced as an error to the user (nothing they did actually failed).
+    try {
+      await api(`/api/orders/${order.id}/send`, { method: "POST", body: JSON.stringify({ channel: "whatsapp", to: recipient }) });
+    } catch {
+      /* logging only - see comment above */
+    }
+  }
+
+  async function submit(e: FormEvent) {
+    e.preventDefault();
+    if (sending) return;
+    setError("");
+    setSuccess("");
+
+    if (isEmail) {
+      setSending(true);
+      try {
+        await api(`/api/orders/${order.id}/send`, { method: "POST", body: JSON.stringify({ channel: "email", to, subject, message: message.trim() || undefined }) });
+        setSuccess(`OS enviada com sucesso para ${to}`);
+        setTimeout(onClose, 1200);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Nao foi possivel enviar a OS. Verifique o e-mail do cliente ou a configuracao do servidor de e-mail.");
+      } finally {
+        setSending(false);
+      }
+      return;
+    }
+
+    setSending(true);
+    const normalized = normalizeWhatsappPhone(to);
+    if (!normalized) {
+      setError("Numero de WhatsApp invalido. Informe DDD + numero, ex: 28 99888-7766.");
+      setSending(false);
+      return;
+    }
+    const text = buildOrderWhatsappMessage({
+      code: order.code,
+      eventDate: new Date(order.eventDate),
+      totalAmount: order.totalAmount,
+      status: order.status,
+      client: order.client ? { name: order.client.name } : null,
+    });
+    window.open(buildWhatsappShareUrl(normalized, text), "_blank", "noopener,noreferrer");
+    setSuccess("WhatsApp aberto com a OS pronta para envio. Confirme o envio na conversa do WhatsApp.");
+    void logWhatsappSend(to);
+    setSending(false);
+    setTimeout(onClose, 1500);
+  }
+
+  return <Modal title={isEmail ? `Enviar OS ${order.code} por e-mail` : `Enviar OS ${order.code} pelo WhatsApp`} onClose={onClose}>
+    <form onSubmit={submit} className="grid gap-3">
+      {error && <p className="rounded-xl bg-rose-50 p-3 text-sm font-bold text-rose-600">{error}</p>}
+      {success && <p className="rounded-xl bg-emerald-50 p-3 text-sm font-bold text-emerald-700">{success}</p>}
+      {!isEmail && <p className="text-xs text-slate-500">O sistema abre o WhatsApp com a mensagem pronta - o envio em si e confirmado por voce, la dentro do WhatsApp.</p>}
+      <Input label={isEmail ? "E-mail do destinatario" : "Numero do WhatsApp"} value={to} set={setTo} required type={isEmail ? "email" : "text"} />
+      {isEmail && <Input label="Assunto" value={subject} set={setSubject} required />}
+      {isEmail && <Text label="Mensagem (opcional)" value={message} set={setMessage} />}
+      <button disabled={sending} className="rounded-xl bg-indigo-600 p-3 font-black text-white disabled:opacity-60">{sending ? "Enviando OS..." : isEmail ? "Enviar por e-mail" : "Abrir WhatsApp"}</button>
+    </form>
+  </Modal>;
+}
+
 // Professional, multi-page-safe OS document. Uses the same window.print() +
 // report-table/@page CSS pattern already validated for the Relatorios PDF
 // (app/globals.css) - no PDF library added. Only ever renders values already
@@ -303,7 +413,8 @@ function RecurrenceModal({ clients, services, employees, branchId, close, onCrea
 // records) - never re-derives numbers on the client.
 function PrintOrder({ order, close }: { order: Order; close: () => void }) {
   const employeeNames = order.employees.map((e) => e.employee.name).join(", ") || "Equipe nao definida";
-  return <Modal title={`OS ${order.code}`} onClose={close}><div className="print-page mx-auto max-w-4xl rounded-2xl border p-8">
+  const [sending, setSending] = useState<SendChannel | null>(null);
+  return <><Modal title={`OS ${order.code}`} onClose={close}><div className="print-page mx-auto max-w-4xl rounded-2xl border p-8">
     <div className="flex flex-wrap items-start justify-between gap-4 border-b pb-6">
       <div><h1 className="text-3xl font-black">LeeveLimpeza</h1><p className="text-sm text-slate-500">Ordem de Servico</p>{order.branch && <p className="mt-1 text-xs text-slate-400">{order.branch.name} - {order.branch.city}</p>}</div>
       <div className="text-right"><p className="font-mono text-lg font-black">{order.code}</p><p className="text-xs text-slate-500">Emitido em {new Date().toLocaleDateString("pt-BR")}</p><div className="mt-2"><Badge status={order.status} /></div></div>
@@ -346,8 +457,13 @@ function PrintOrder({ order, close }: { order: Order; close: () => void }) {
       <div className="border-t pt-3">Assinatura do responsavel<br />LeeveLimpeza</div>
     </div>
 
-    <button onClick={() => window.print()} className="no-print mt-8 rounded-xl bg-indigo-600 px-4 py-2 font-black text-white">Gerar PDF / Imprimir</button>
-  </div></Modal>;
+    <div className="no-print mt-8 flex flex-wrap gap-3">
+      <button onClick={() => window.print()} className="rounded-xl bg-indigo-600 px-4 py-2 font-black text-white">Gerar PDF / Imprimir</button>
+      <button onClick={() => downloadOrderPdf(order)} className="rounded-xl border border-indigo-300 px-4 py-2 font-black text-indigo-600">Baixar PDF</button>
+      <button onClick={() => setSending("email")} className="rounded-xl border border-emerald-300 px-4 py-2 font-black text-emerald-600">Enviar por e-mail</button>
+      <button onClick={() => setSending("whatsapp")} className="rounded-xl border border-emerald-300 px-4 py-2 font-black text-emerald-600">Enviar pelo WhatsApp</button>
+    </div>
+  </div></Modal>{sending && <SendOrderModal order={order} channel={sending} onClose={() => setSending(null)} />}</>;
 }
 
 type CalendarAppointment = { id: string; date: string; startTime: string; endTime: string; status: string; employee?: { name: string } | null; branch?: { name: string } | null; order: { id: string; code: string; client?: { name: string }; items: OrderItem[] } };

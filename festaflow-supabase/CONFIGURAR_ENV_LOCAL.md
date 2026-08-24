@@ -22,7 +22,7 @@ Nunca use `SUPABASE_SECRET_KEY` em componentes client-side.
 
 ## E-mail (opcional)
 
-Para o envio automatico de e-mail ao concluir um atendimento, adicione tambem:
+Para o envio automatico de e-mail ao concluir um atendimento e para o envio manual de OS por e-mail (tela de Ordens de Servico), adicione tambem:
 
 ```env
 SMTP_HOST="smtp.exemplo.com"
@@ -32,4 +32,6 @@ SMTP_PASS="senha_smtp"
 EMAIL_FROM="LeeveLimpeza <contato@leevelimpeza.com>"
 ```
 
-Sem essas variaveis, o sistema funciona normalmente — o envio e apenas ignorado (com aviso no log do servidor), nunca quebra a conclusao do atendimento.
+Sem essas variaveis, o sistema funciona normalmente — o envio automatico e apenas ignorado (com aviso no log do servidor) e o envio manual de OS mostra uma mensagem clara ao usuario informando que o servidor de e-mail nao esta configurado; nada disso quebra a aplicacao.
+
+`EMAIL_FROM` no formato `"Nome <endereco>"` acima ja define o remetente exibido para o cliente (ex: `atendimento@leevelimpeza.com.br`) — nunca o e-mail pessoal de quem enviou. Nao ha variavel separada para nome/endereco do remetente.

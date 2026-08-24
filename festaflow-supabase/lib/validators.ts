@@ -35,6 +35,17 @@ export const recurringScheduleSchema = z.object({
 
 export const branchSchema = z.object({ name: z.string().min(2), city: z.string().min(2), state: z.string().length(2), active: z.coerce.boolean().default(true) });
 
+// `to` is intentionally user-editable (send-OS modal lets the user override
+// the client's registered email) - only syntactic validity is enforced here.
+// The OS content itself is never taken from this payload; the send route
+// always re-fetches it from the database by id. For "whatsapp" this schema
+// only backs a best-effort send-history log entry - the actual wa.me link is
+// opened client-side before this request is made.
+export const sendOrderSchema = z.discriminatedUnion("channel", [
+  z.object({ channel: z.literal("email"), to: z.string().trim().email("Informe um e-mail valido."), subject: z.string().trim().min(1).max(200).optional(), message: z.string().trim().max(2000).optional() }),
+  z.object({ channel: z.literal("whatsapp"), to: z.string().trim().min(8).max(30) }),
+]);
+
 // Keep in sync with ModuleName in lib/authz.ts.
 export const moduleNameEnum = z.enum(["clients", "employees", "services", "orders", "calendar", "finance", "reports"]);
 export const userRoleEnum = z.enum(["admin", "operador", "funcionario"]);
