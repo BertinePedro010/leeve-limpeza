@@ -262,7 +262,7 @@ function OrderFormModal({ order, orders, clients, employees, services, branchId,
       // already durable by the time this runs. onClose only fires once this
       // resolves, so the modal never closes before the update is applied.
       await onSaved(saved);
-      setSuccess("Alteracoes salvas com sucesso.");
+      setSuccess("OS salva com sucesso!");
       setTimeout(onClose, 900);
     } catch (err) {
       const field = err instanceof ApiError ? err.field : undefined;
