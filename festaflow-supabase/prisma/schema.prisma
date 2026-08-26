@@ -192,7 +192,19 @@ model ServiceOrder {
   eventDate          DateTime            @map("event_date") @db.Timestamptz(6)
   startTime          String              @map("start_time") @db.VarChar(10)
   endTime            String              @map("end_time") @db.VarChar(10)
+  // Legacy single-line address, kept NOT NULL for backward compatibility with
+  // orders created before the structured address fields below existed. New
+  // and edited orders always compute this from those fields server-side
+  // (see lib/order-address.ts) so anything still reading `location` directly
+  // (PDF/email fallback, WhatsApp) keeps working without modification.
   location           String              @db.Text
+  addressZip         String?             @map("address_zip") @db.VarChar(9)
+  addressStreet      String?             @map("address_street") @db.VarChar(200)
+  addressNumber      String?             @map("address_number") @db.VarChar(20)
+  addressNeighborhood String?            @map("address_neighborhood") @db.VarChar(120)
+  addressCity        String?             @map("address_city") @db.VarChar(120)
+  addressState       String?             @map("address_state") @db.VarChar(2)
+  addressReference   String?             @map("address_reference") @db.VarChar(200)
   status             OsStatus            @default(pendente)
   // Free-text field kept exactly as-is for legacy records (e.g. "Pix 50/50",
   // "Faturamento 30 dias") that a controlled enum cannot represent losslessly.

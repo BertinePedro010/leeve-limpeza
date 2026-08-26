@@ -2,6 +2,7 @@ import { prisma } from "@/lib/prisma";
 import { requireAuth, requireModule, assertRecordBranchAccess, assertBranchAccess, AuthzError, handleAuthzError } from "@/lib/authz";
 import { orderSchema, orderValidationError } from "@/lib/validators";
 import { syncOrderBilling } from "@/lib/billing";
+import { formatOrderAddressLine } from "@/lib/order-address";
 import { fail, ok, serialize } from "@/lib/json";
 
 function total(items: Array<{ quantity: number; unitPrice: number }>) {
@@ -79,6 +80,7 @@ export async function PUT(request: Request, { params }: { params: Promise<{ id: 
         where: { id },
         data: {
           ...body,
+          location: formatOrderAddressLine(body),
           branchId,
           totalAmount: total(items),
           items: { create: items },

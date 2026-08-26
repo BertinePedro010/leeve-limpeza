@@ -4,6 +4,8 @@
 // throwing — a missing/unconfigured provider must never break the caller's
 // business transaction (e.g. marking an appointment as completed).
 
+import { hasStructuredOrderAddress } from "@/lib/order-address";
+
 export interface EmailAttachment {
   filename: string;
   content: Buffer;
@@ -110,6 +112,13 @@ export interface OrderEmailSummary {
   status: string;
   eventDate: Date;
   location: string;
+  addressZip?: string | null;
+  addressStreet?: string | null;
+  addressNumber?: string | null;
+  addressNeighborhood?: string | null;
+  addressCity?: string | null;
+  addressState?: string | null;
+  addressReference?: string | null;
   totalAmount: number | string;
   notes?: string | null;
   clientName: string;
@@ -133,7 +142,13 @@ export async function sendOrderEmail(params: {
   const o = params.order;
   const clientName = escapeHtml(o.clientName);
   const orderCode = escapeHtml(o.code);
-  const location = escapeHtml(o.location);
+  const addressHtml = hasStructuredOrderAddress(o)
+    ? [
+        `${escapeHtml(o.addressStreet!)}, ${escapeHtml(o.addressNumber!)} - ${escapeHtml(o.addressNeighborhood!)}`,
+        `${escapeHtml(o.addressCity!)}/${escapeHtml(o.addressState!)}${o.addressZip ? ` - CEP: ${escapeHtml(o.addressZip)}` : ""}`,
+        o.addressReference ? `Referencia: ${escapeHtml(o.addressReference)}` : "",
+      ].filter(Boolean).join("<br/>")
+    : escapeHtml(o.location);
   const statusLabel = escapeHtml(orderStatusLabels[o.status] ?? o.status);
   const dateLabel = o.eventDate.toLocaleDateString("pt-BR", { timeZone: "UTC" });
   const employeeNames = o.employeeNames.length > 0 ? escapeHtml(o.employeeNames.join(", ")) : "Equipe nao definida";
@@ -157,7 +172,7 @@ export async function sendOrderEmail(params: {
       <tr><td><strong>Codigo</strong></td><td>${orderCode}</td></tr>
       <tr><td><strong>Cliente</strong></td><td>${clientName}</td></tr>
       <tr><td><strong>Data</strong></td><td>${dateLabel}</td></tr>
-      <tr><td><strong>Local</strong></td><td>${location}</td></tr>
+      <tr><td><strong>Local</strong></td><td>${addressHtml}</td></tr>
       <tr><td><strong>Funcionarios</strong></td><td>${employeeNames}</td></tr>
       <tr><td><strong>Status</strong></td><td>${statusLabel}</td></tr>
       <tr><td><strong>Valor total</strong></td><td>${orderMoney(o.totalAmount)}</td></tr>

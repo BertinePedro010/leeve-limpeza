@@ -10,6 +10,7 @@
 // a custom font.
 import PDFDocument from "pdfkit";
 import type { Prisma } from "@prisma/client";
+import { hasStructuredOrderAddress } from "@/lib/order-address";
 
 const orderPdfInclude = {
   client: true,
@@ -64,7 +65,17 @@ export function buildOrderPdf(order: OrderForPdf): Promise<Buffer> {
     if (order.client?.phone) doc.text(`Telefone: ${order.client.phone}`);
     if (order.client?.email) doc.text(`E-mail: ${order.client.email}`);
     if (order.client?.address) doc.text(`Endereco do cliente: ${order.client.address}`);
-    doc.text(`Local do servico: ${order.location}`);
+    doc.moveDown(0.5);
+
+    doc.font("Helvetica-Bold").fontSize(11).text("Endereco do atendimento");
+    doc.font("Helvetica").fontSize(10);
+    if (hasStructuredOrderAddress(order)) {
+      doc.text(`${order.addressStreet}, ${order.addressNumber} - ${order.addressNeighborhood}`);
+      doc.text(`${order.addressCity}/${order.addressState}${order.addressZip ? `  CEP: ${order.addressZip}` : ""}`);
+      if (order.addressReference) doc.text(`Referencia: ${order.addressReference}`);
+    } else {
+      doc.text(order.location);
+    }
     doc.moveDown();
 
     doc.font("Helvetica-Bold").fontSize(11).text("Servicos contratados");

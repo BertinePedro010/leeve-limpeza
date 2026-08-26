@@ -3,6 +3,7 @@ import type { Prisma } from "@prisma/client";
 import { requireAuth, requireModule, resolveBranchIdForCreate, resolveBranchFilter, AuthzError, handleAuthzError } from "@/lib/authz";
 import { orderSchema, orderValidationError } from "@/lib/validators";
 import { syncOrderBilling } from "@/lib/billing";
+import { formatOrderAddressLine } from "@/lib/order-address";
 import { fail, ok, serialize } from "@/lib/json";
 
 // Must be called with the *transaction* client when running inside
@@ -92,6 +93,7 @@ export async function POST(request: Request) {
       const order = await tx.serviceOrder.create({
         data: {
           ...body,
+          location: formatOrderAddressLine(body),
           branchId,
           createdBy: auth.userId,
           code: await nextCode(tx, branchId),

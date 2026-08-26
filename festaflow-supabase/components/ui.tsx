@@ -80,24 +80,31 @@ export function Save() {
 
 export type CepAddress = { cep: string; street: string; neighborhood: string; city: string; state: string };
 
+export const brazilStateOptions: Array<[string, string]> = [
+  ["", "UF"], ["AC", "Acre"], ["AL", "Alagoas"], ["AP", "Amapa"], ["AM", "Amazonas"], ["BA", "Bahia"], ["CE", "Ceara"],
+  ["DF", "Distrito Federal"], ["ES", "Espirito Santo"], ["GO", "Goias"], ["MA", "Maranhao"], ["MT", "Mato Grosso"],
+  ["MS", "Mato Grosso do Sul"], ["MG", "Minas Gerais"], ["PA", "Para"], ["PB", "Paraiba"], ["PR", "Parana"],
+  ["PE", "Pernambuco"], ["PI", "Piaui"], ["RJ", "Rio de Janeiro"], ["RN", "Rio Grande do Norte"], ["RS", "Rio Grande do Sul"],
+  ["RO", "Rondonia"], ["RR", "Roraima"], ["SC", "Santa Catarina"], ["SP", "Sao Paulo"], ["SE", "Sergipe"], ["TO", "Tocantins"],
+];
+
+// ViaCEP always returns the 2-letter UF already, but a defensive fallback in
+// case a different CEP provider ever returns the full state name instead -
+// looks it up against the same list the state <select> uses, so the two
+// never drift out of sync.
+export function normalizeStateToUf(value: string): string {
+  const trimmed = value.trim();
+  if (trimmed.length <= 2) return trimmed.toUpperCase();
+  const found = brazilStateOptions.find(([, name]) => name.toLowerCase() === trimmed.toLowerCase());
+  return found ? found[0] : trimmed.toUpperCase().slice(0, 2);
+}
+
 // Keeps the CEP input masked as the user types/pastes, accepting input with
 // or without the dash (or any other stray characters) - only the digits
 // matter for both display and the lookup below.
 export function formatCep(value: string): string {
   const digits = value.replace(/\D/g, "").slice(0, 8);
   return digits.length > 5 ? `${digits.slice(0, 5)}-${digits.slice(5)}` : digits;
-}
-
-// ViaCEP omits `logradouro`/`bairro` for CEPs that cover a whole small city
-// rather than one street - joining only the non-empty parts avoids stray
-// ", -" fragments in the composed address in that case.
-export function composeCepAddress(address: CepAddress): string {
-  const parts: string[] = [];
-  if (address.street && address.neighborhood) parts.push(`${address.street} - ${address.neighborhood}`);
-  else if (address.street || address.neighborhood) parts.push(address.street || address.neighborhood);
-  const cityState = [address.city, address.state].filter(Boolean).join("/");
-  if (cityState) parts.push(cityState);
-  return parts.join(", ");
 }
 
 // Free public lookup (no API key/secret involved) - used directly from the
@@ -109,7 +116,7 @@ export async function fetchCepAddress(cep: string): Promise<CepAddress | null> {
   if (!res.ok) throw new Error("viacep_unavailable");
   const data = await res.json();
   if (data.erro) return null;
-  return { cep: formatCep(digits), street: data.logradouro || "", neighborhood: data.bairro || "", city: data.localidade || "", state: data.uf || "" };
+  return { cep: formatCep(digits), street: data.logradouro || "", neighborhood: data.bairro || "", city: data.localidade || "", state: normalizeStateToUf(data.uf || "") };
 }
 
 // CEP input with autofill: Enter or the search button look up the address
