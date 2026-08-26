@@ -78,6 +78,97 @@ export function Save() {
   return <button className="rounded-xl bg-indigo-600 p-3 font-black text-white">Salvar</button>;
 }
 
+export type CepAddress = { cep: string; street: string; neighborhood: string; city: string; state: string };
+
+// Keeps the CEP input masked as the user types/pastes, accepting input with
+// or without the dash (or any other stray characters) - only the digits
+// matter for both display and the lookup below.
+export function formatCep(value: string): string {
+  const digits = value.replace(/\D/g, "").slice(0, 8);
+  return digits.length > 5 ? `${digits.slice(0, 5)}-${digits.slice(5)}` : digits;
+}
+
+// ViaCEP omits `logradouro`/`bairro` for CEPs that cover a whole small city
+// rather than one street - joining only the non-empty parts avoids stray
+// ", -" fragments in the composed address in that case.
+export function composeCepAddress(address: CepAddress): string {
+  const parts: string[] = [];
+  if (address.street && address.neighborhood) parts.push(`${address.street} - ${address.neighborhood}`);
+  else if (address.street || address.neighborhood) parts.push(address.street || address.neighborhood);
+  const cityState = [address.city, address.state].filter(Boolean).join("/");
+  if (cityState) parts.push(cityState);
+  return parts.join(", ");
+}
+
+// Free public lookup (no API key/secret involved) - used directly from the
+// browser exactly as ViaCEP's own docs recommend. Kept separate from the
+// component so it can be unit-tested without rendering anything.
+export async function fetchCepAddress(cep: string): Promise<CepAddress | null> {
+  const digits = cep.replace(/\D/g, "");
+  const res = await fetch(`https://viacep.com.br/ws/${digits}/json/`);
+  if (!res.ok) throw new Error("viacep_unavailable");
+  const data = await res.json();
+  if (data.erro) return null;
+  return { cep: formatCep(digits), street: data.logradouro || "", neighborhood: data.bairro || "", city: data.localidade || "", state: data.uf || "" };
+}
+
+// CEP input with autofill: Enter or the search button look up the address
+// via ViaCEP and hand the result to `onFound` for the caller to merge into
+// its own address field(s) - this component never assumes where the result
+// should land, so it stays reusable across OS/client forms.
+export function CepField({ value, onChange, onFound, id, label = "CEP" }: { value: string; onChange: (v: string) => void; onFound: (address: CepAddress) => void; id?: string; label?: string }) {
+  const [loading, setLoading] = useState(false);
+  const [notice, setNotice] = useState<{ tone: "error" | "info"; text: string } | null>(null);
+  const lastLookedUpRef = useRef("");
+
+  async function lookup() {
+    const digits = value.replace(/\D/g, "");
+    if (digits.length !== 8 || loading || lastLookedUpRef.current === digits) return;
+    lastLookedUpRef.current = digits;
+    setLoading(true);
+    setNotice(null);
+    try {
+      const address = await fetchCepAddress(digits);
+      if (!address) { setNotice({ tone: "error", text: "CEP nao encontrado. Verifique o numero informado." }); return; }
+      onChange(address.cep);
+      onFound(address);
+    } catch {
+      setNotice({ tone: "error", text: "Nao foi possivel consultar o CEP. Preencha o endereco manualmente." });
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function handleChange(raw: string) {
+    lastLookedUpRef.current = "";
+    setNotice(null);
+    onChange(formatCep(raw));
+  }
+
+  return (
+    <label className="grid gap-1 text-xs font-black uppercase text-slate-500">
+      {label}
+      <div className="flex gap-2">
+        <input
+          id={id}
+          inputMode="numeric"
+          placeholder="00000-000"
+          maxLength={9}
+          value={value}
+          onChange={(e) => handleChange(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); lookup(); } }}
+          className="w-full rounded-xl border p-3 text-sm font-normal normal-case text-slate-800"
+        />
+        <button type="button" onClick={lookup} disabled={loading} className="shrink-0 rounded-xl bg-slate-100 px-3 text-sm font-black normal-case text-slate-700 disabled:opacity-60">
+          {loading ? "Buscando..." : "Buscar"}
+        </button>
+      </div>
+      {loading && <span className="text-[11px] font-normal normal-case text-slate-400">Buscando endereco...</span>}
+      {notice && <span className={`text-[11px] font-normal normal-case ${notice.tone === "error" ? "text-rose-600" : "text-slate-500"}`}>{notice.text}</span>}
+    </label>
+  );
+}
+
 type SelectableEmployee = { id: string; name: string; role: string };
 
 // Dropdown + search + removable chips, replacing a plain toggle-button grid.

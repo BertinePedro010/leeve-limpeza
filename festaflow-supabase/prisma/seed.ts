@@ -4,14 +4,14 @@ const prisma = new PrismaClient();
 
 async function main() {
   const vitoria = await prisma.branch.upsert({
-    where: { name: "Vitória" },
+    where: { name: "Grande Vitória" },
     update: {},
-    create: { name: "Vitória", city: "Vitória", state: "ES" },
+    create: { name: "Grande Vitória", city: "Vitória", state: "ES" },
   });
   await prisma.branch.upsert({
-    where: { name: "Cachoeiro" },
+    where: { name: "Cachoeiro e Regiões" },
     update: {},
-    create: { name: "Cachoeiro", city: "Cachoeiro de Itapemirim", state: "ES" },
+    create: { name: "Cachoeiro e Regiões", city: "Cachoeiro de Itapemirim", state: "ES" },
   });
 
   const carlos = await prisma.client.upsert({
