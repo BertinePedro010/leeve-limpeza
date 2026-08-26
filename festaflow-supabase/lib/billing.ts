@@ -1,4 +1,4 @@
-import type { Prisma, Transaction } from "@prisma/client";
+import type { Prisma, ServiceOrder, Transaction } from "@prisma/client";
 
 // Single source of truth for turning a finalized OS into revenue. Called from
 // every path that can change service_orders.status (order PUT, appointment
@@ -14,9 +14,22 @@ import type { Prisma, Transaction } from "@prisma/client";
 //
 // Must always be called with the transaction client (`tx`), never the outer
 // `prisma` singleton - see the connection_limit=1 warning in app/api/orders/route.ts.
-export async function syncOrderBilling(tx: Prisma.TransactionClient, orderId: string): Promise<void> {
-  const order = await tx.serviceOrder.findUniqueOrThrow({ where: { id: orderId } });
-  const existing = await tx.transaction.findFirst({ where: { orderId, isAutoRevenue: true } });
+//
+// `options.order`: pass the order when the caller already has a fresh copy
+// (e.g. the return value of the same transaction's own create/update) to
+// skip a redundant round-trip - shaves one query off every order save.
+// `options.skipExistingLookup`: safe ONLY when `orderId` is guaranteed to be
+// brand new in this same transaction (nothing could have inserted an
+// auto-revenue transaction against an id that didn't exist a moment ago) -
+// the order-creation path uses this; edits and appointment-completion never do,
+// since an edited order may have been finalized (and billed) in the past.
+export async function syncOrderBilling(
+  tx: Prisma.TransactionClient,
+  orderId: string,
+  options?: { order?: ServiceOrder; skipExistingLookup?: boolean }
+): Promise<void> {
+  const order = options?.order ?? await tx.serviceOrder.findUniqueOrThrow({ where: { id: orderId } });
+  const existing = options?.skipExistingLookup ? null : await tx.transaction.findFirst({ where: { orderId, isAutoRevenue: true } });
 
   if (order.status === "finalizado") {
     const data = {

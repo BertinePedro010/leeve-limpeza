@@ -76,7 +76,7 @@ export async function PUT(request: Request, { params }: { params: Promise<{ id: 
     const data = await prisma.$transaction(async (tx) => {
       await tx.serviceOrderItem.deleteMany({ where: { orderId: id } });
       await tx.orderEmployee.deleteMany({ where: { orderId: id } });
-      await tx.serviceOrder.update({
+      const updated = await tx.serviceOrder.update({
         where: { id },
         data: {
           ...body,
@@ -100,8 +100,12 @@ export async function PUT(request: Request, { params }: { params: Promise<{ id: 
       }
       // Must run after the status write above and before the final read below,
       // so the returned order (and every other module reading transactions)
-      // reflects the up-to-date billing state in the same response.
-      await syncOrderBilling(tx, id);
+      // reflects the up-to-date billing state in the same response. `updated`
+      // (the update() return value) is passed in to skip a redundant re-fetch
+      // of the order this transaction just wrote - the existing-transaction
+      // lookup itself still runs (unlike the create path): an edited order
+      // may have been finalized, and billed, at some point in its past.
+      await syncOrderBilling(tx, id, { order: updated });
       return tx.serviceOrder.findUniqueOrThrow({ where: { id }, include: include(canViewFinance) });
     }, { timeout: 15000 });
     return ok(serialize(data));
