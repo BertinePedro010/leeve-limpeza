@@ -97,6 +97,16 @@ export async function PUT(request: Request, { params }: { params: Promise<{ id: 
           where: { orderId: id, status: { notIn: ["finalizado", "cancelado"] } },
           data: { status: "cancelado", cancelledAt: new Date(), cancelledBy: auth.userId, cancellationReason: "OS cancelada." },
         });
+      } else if (existing.status !== body.status) {
+        // OS status was deliberately changed in this edit - reflect it on the
+        // "principal" occurrence (the appointment on the OS event date),
+        // unless that occurrence is already terminal. Additional occurrences
+        // keep whatever status they were individually set to. Never a bulk
+        // rewrite of every appointment.
+        await tx.appointment.updateMany({
+          where: { orderId: id, date: body.eventDate, status: { notIn: ["finalizado", "cancelado"] } },
+          data: { status: body.status },
+        });
       }
       // Must run after the status write above and before the final read below,
       // so the returned order (and every other module reading transactions)

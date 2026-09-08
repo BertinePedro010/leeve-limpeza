@@ -88,6 +88,14 @@ export async function POST(request: Request) {
     // appointment mirroring eventDate/startTime/endTime. dates present: one
     // appointment per selected date, all under the same OS.
     const appointmentDates = dates && dates.length > 0 ? dates : [body.eventDate];
+    // The occurrence on the OS's own event date is the "principal" - it
+    // inherits the OS status (an OS created as "confirmado" means that date is
+    // confirmed). Every other date is a scheduled extra -> default "pendente"
+    // (label "Agendado"). Each occurrence keeps its own status from here on;
+    // the Dashboard counts occurrences by THIS status, not the OS status.
+    const eventDateKey = new Date(body.eventDate).toISOString().slice(0, 10);
+    const statusForDate = (date: Date) =>
+      new Date(date).toISOString().slice(0, 10) === eventDateKey ? body.status : "pendente";
 
     const data = await prisma.$transaction(async (tx) => {
       const order = await tx.serviceOrder.create({
@@ -109,6 +117,7 @@ export async function POST(request: Request) {
           date,
           startTime: body.startTime,
           endTime: body.endTime,
+          status: statusForDate(date),
         })),
       });
       // Covers the rare case of an order created already in "finalizado"
