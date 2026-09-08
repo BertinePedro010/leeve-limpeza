@@ -1,6 +1,9 @@
 import { prisma } from "@/lib/prisma";
 import { requireAuth, requireModule, resolveBranchIdForCreate, resolveBranchFilter, handleAuthzError } from "@/lib/authz";
 import { clientSchema } from "@/lib/validators";
+import { formatClientAddressLine } from "@/lib/client-address";
+import { checkDuplicateClient, isDuplicateClientDbError } from "@/lib/client-dedupe.server";
+import { DUPLICATE_CLIENT_MESSAGE } from "@/lib/client-dedupe";
 import { fail, ok, serialize } from "@/lib/json";
 
 export async function GET(request: Request) {
@@ -28,10 +31,13 @@ export async function POST(request: Request) {
     const parsed = clientSchema.safeParse(await request.json());
     if (!parsed.success) return fail("Cliente invalido.", 422);
     const branchId = resolveBranchIdForCreate(auth, parsed.data.branchId);
-    const { branchId: _branchId, ...rest } = parsed.data;
-    const data = await prisma.client.create({ data: { ...rest, branchId } });
+    const { branchId: _branchId, address: _legacyAddress, ...rest } = parsed.data;
+    const duplicate = await checkDuplicateClient(branchId, rest.name, rest.document);
+    if (duplicate) return duplicate;
+    const data = await prisma.client.create({ data: { ...rest, address: formatClientAddressLine(rest), branchId } });
     return ok(serialize(data), 201);
   } catch (error) {
+    if (isDuplicateClientDbError(error)) return fail(DUPLICATE_CLIENT_MESSAGE, 409);
     return handleAuthzError(error);
   }
 }

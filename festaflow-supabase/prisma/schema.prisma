@@ -122,8 +122,25 @@ model Client {
   name               String              @db.VarChar(180)
   email              String?             @db.VarChar(180)
   phone              String?             @db.VarChar(40)
-  document           String?             @unique @db.VarChar(40)
+  // NOT globally unique: the same CPF/CNPJ may repeat for clients with
+  // different names (e.g. a person and their company). Uniqueness is now
+  // (branch_id, digits-only document, normalized name), enforced app-side in
+  // app/api/clients (see lib/client-dedupe.ts) with a partial functional
+  // unique index as a DB backstop - migration 20260908130000, not
+  // expressible in the Prisma schema.
+  document           String?             @db.VarChar(40)
+  // Legacy single-line address, kept for backward compatibility with clients
+  // created before the structured fields below existed. New/edited clients
+  // always compute this from those fields server-side (see lib/client-address.ts)
+  // so anything still reading `address` directly (e.g. the OS PDF) keeps working.
   address            String?             @db.Text
+  addressZip         String?             @map("address_zip") @db.VarChar(9)
+  addressStreet      String?             @map("address_street") @db.VarChar(200)
+  addressNumber      String?             @map("address_number") @db.VarChar(20)
+  addressNeighborhood String?            @map("address_neighborhood") @db.VarChar(120)
+  addressCity        String?             @map("address_city") @db.VarChar(120)
+  addressState       String?             @map("address_state") @db.VarChar(2)
+  addressReference   String?             @map("address_reference") @db.VarChar(200)
   notes              String?             @db.Text
   createdAt          DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt          DateTime            @updatedAt @map("updated_at") @db.Timestamptz(6)

@@ -1,7 +1,14 @@
 import { z } from "zod";
 
 const emptyToUndefined = (v: unknown) => (v === "" ? undefined : v);
-export const clientSchema = z.object({ branchId: z.string().uuid().optional(), name: z.string().min(2), email: z.preprocess(emptyToUndefined, z.string().email().optional().nullable()), phone: z.string().optional().nullable(), document: z.preprocess(emptyToUndefined, z.string().optional().nullable()), address: z.string().optional().nullable(), notes: z.string().optional().nullable() });
+// Address is captured as structured fields (mirrors orderSchema). `address`
+// (legacy free text) is still accepted for backward compatibility but is
+// always overwritten server-side with a single-line mirror computed from the
+// structured fields (see lib/client-address.ts). Rua/Bairro/Cidade/Estado are
+// required; Numero is required to form a usable address line, Ponto de
+// referencia is fully optional. CEP is optional - it only drives the autofill
+// lookup on the form.
+export const clientSchema = z.object({ branchId: z.string().uuid().optional(), name: z.string().min(2), email: z.preprocess(emptyToUndefined, z.string().email().optional().nullable()), phone: z.string().optional().nullable(), document: z.preprocess(emptyToUndefined, z.string().optional().nullable()), address: z.string().optional().nullable(), addressZip: z.string().optional().nullable(), addressStreet: z.string().min(2), addressNumber: z.string().min(1), addressNeighborhood: z.string().min(2), addressCity: z.string().min(2), addressState: z.string().length(2), addressReference: z.string().optional().nullable(), notes: z.string().optional().nullable() });
 export const employeeSchema = z.object({ branchId: z.string().uuid().optional(), name: z.string().min(2), role: z.string().min(2), phone: z.string().optional().nullable(), dailyRate: z.coerce.number().nonnegative(), paymentType: z.string().default("diaria"), notes: z.string().optional().nullable() });
 export const serviceSchema = z.object({ branchId: z.string().uuid().optional(), name: z.string().min(2), description: z.string().optional().nullable(), price: z.coerce.number().nonnegative(), durationHours: z.coerce.number().nonnegative(), category: z.string().min(2), active: z.coerce.boolean().default(true) });
 export const transactionSchema = z.object({ branchId: z.string().uuid().optional(), type: z.enum(["receita", "despesa"]), category: z.string().min(2), description: z.string().min(2), amount: z.coerce.number().nonnegative(), dueDate: z.coerce.date(), paidAt: z.coerce.date().optional().nullable(), status: z.enum(["pago", "pendente"]), orderId: z.string().uuid().optional().nullable() });

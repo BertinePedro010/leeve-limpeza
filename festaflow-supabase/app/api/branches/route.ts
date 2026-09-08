@@ -1,8 +1,14 @@
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { requireAuth, requireGlobalAdmin, handleAuthzError } from "@/lib/authz";
+import { requireAuth, requireGlobalAdmin, handleAuthzError, AuthzError } from "@/lib/authz";
 import { branchSchema } from "@/lib/validators";
 import { fail, ok, serialize } from "@/lib/json";
+import { MAX_BRANCHES, BRANCH_LIMIT_MESSAGE } from "@/lib/branch-limit";
+
+// Chave arbitrária e fixa para pg_advisory_xact_lock: serializa criações de
+// filial concorrentes nesta API para a contagem de limite abaixo não sofrer
+// corrida. Precisa ser a mesma em todas as requisições (por isso constante).
+const BRANCH_CREATE_LOCK_KEY = 748923001;
 
 export async function GET() {
   try {
@@ -26,12 +32,24 @@ export async function POST(request: Request) {
     await requireGlobalAdmin(auth);
     const parsed = branchSchema.safeParse(await request.json());
     if (!parsed.success) return fail("Filial invalida.", 422);
-    // The creating global admin is linked to the new branch immediately -
-    // otherwise they would be locked out of it (access is always data-driven
-    // from user_branches, never inferred from role, even for the creator).
     const data = await prisma.$transaction(async (tx) => {
+      // Limite de 6 filiais, verificado no servidor antes do INSERT. O
+      // advisory lock (liberado no fim da transação) serializa criações
+      // concorrentes: uma segunda requisição simultânea só passa a contar
+      // depois que a primeira commitou, então nunca chega a 7. O trigger
+      // trg_enforce_branch_limit no banco é o backstop final para qualquer
+      // INSERT fora desta rota.
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(${BRANCH_CREATE_LOCK_KEY})`;
+      const total = await tx.branch.count();
+      if (total >= MAX_BRANCHES) throw new AuthzError(BRANCH_LIMIT_MESSAGE, 409);
+
       const branch = await tx.branch.create({ data: parsed.data });
-      await tx.userBranch.create({ data: { userId: auth.userId, branchId: branch.id } });
+      // O trigger trg_link_global_admins_to_new_branch já vincula em
+      // user_branches TODOS os admins globais atuais (inclusive quem está
+      // criando). Este createMany é só uma garantia extra para o criador,
+      // idempotente via skipDuplicates - acesso é sempre data-driven de
+      // user_branches, nunca inferido do role.
+      await tx.userBranch.createMany({ data: [{ userId: auth.userId, branchId: branch.id }], skipDuplicates: true });
       return branch;
     }, { timeout: 15000 });
     return ok(serialize(data), 201);

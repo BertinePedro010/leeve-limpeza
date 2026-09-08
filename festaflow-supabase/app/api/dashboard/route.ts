@@ -45,13 +45,34 @@ export async function GET(request: Request) {
     const canViewEmployees = isAdmin || auth.profile.allowedModules.includes("employees");
     const canViewServices = isAdmin || auth.profile.allowedModules.includes("services");
 
+    // OsStatus (see prisma/schema.prisma + lib/validators.ts orderSchema) has
+    // exactly 5 values: pendente | confirmado | em_andamento | finalizado |
+    // cancelado. UI labels (components/ui.tsx statusLabels): pendente ->
+    // "Agendado", confirmado -> "Confirmado", finalizado -> "Realizado".
+    //
+    //  - scheduledOrders  = status pendente
+    //  - confirmedOrders  = status confirmado
+    //  - finalizedOrders  = status finalizado
+    //  - totalOrders      = every non-deleted OS whose status is NOT cancelado
+    //                       (pendente + confirmado + em_andamento + finalizado)
+    //
+    // The three status buckets are disjoint equality filters, so no OS is
+    // counted twice; totalOrders is a single separate aggregate (never a sum
+    // of the buckets) so em_andamento is included too and rounding can't
+    // drift. cancelado and soft-deleted never enter any of these (orderWhere
+    // already pins deletedAt: null). Every amount is Postgres
+    // _sum(total_amount) - no OS row is ever shipped to the client for this.
+    const NON_CANCELLED: OsStatus[] = ["pendente", "confirmado", "em_andamento", "finalizado"];
     const [
       clients,
       employees,
       services,
       ordersCount,
       activeOrdersCount,
-      completedOrdersCount,
+      totalOrdersAgg,
+      finalizedOrdersAgg,
+      confirmedOrdersAgg,
+      scheduledOrdersAgg,
       upcomingOrders,
       revenueAgg,
       expensesAgg,
@@ -63,7 +84,10 @@ export async function GET(request: Request) {
       prisma.service.count({ where: { deletedAt: null, ...branchFilter } }),
       canViewOrders ? prisma.serviceOrder.count({ where: orderWhere }) : Promise.resolve(0),
       canViewOrders ? prisma.serviceOrder.count({ where: { ...orderWhere, status: { notIn: INACTIVE_ORDER_STATUSES } } }) : Promise.resolve(0),
-      canViewOrders ? prisma.serviceOrder.count({ where: { ...orderWhere, status: "finalizado" } }) : Promise.resolve(0),
+      canViewOrders ? prisma.serviceOrder.aggregate({ where: { ...orderWhere, status: { in: NON_CANCELLED } }, _count: { _all: true }, _sum: { totalAmount: true } }) : Promise.resolve(null),
+      canViewOrders ? prisma.serviceOrder.aggregate({ where: { ...orderWhere, status: "finalizado" }, _count: { _all: true }, _sum: { totalAmount: true } }) : Promise.resolve(null),
+      canViewOrders ? prisma.serviceOrder.aggregate({ where: { ...orderWhere, status: "confirmado" }, _count: { _all: true }, _sum: { totalAmount: true } }) : Promise.resolve(null),
+      canViewOrders ? prisma.serviceOrder.aggregate({ where: { ...orderWhere, status: "pendente" }, _count: { _all: true }, _sum: { totalAmount: true } }) : Promise.resolve(null),
       // `upcomingOrders` is trimmed to exactly what DashboardView renders
       // (id/code/status/eventDate/client name) - the full ServiceOrder +
       // Client records carry PII (document/address/phone) and financial
@@ -78,6 +102,16 @@ export async function GET(request: Request) {
       canViewFinance ? prisma.transaction.aggregate({ where: { ...transactionWhere, type: "receita", status: "pendente" }, _sum: { amount: true } }) : Promise.resolve(null),
       canViewFinance ? prisma.transaction.aggregate({ where: { ...transactionWhere, type: "despesa", status: "pendente" }, _sum: { amount: true } }) : Promise.resolve(null),
     ]);
+
+    const bucket = (agg: { _count: { _all: number }; _sum: { totalAmount: Prisma.Decimal | null } } | null) => ({
+      count: agg?._count._all ?? 0,
+      total: Number(agg?._sum.totalAmount ?? 0),
+    });
+    const totalOrders = bucket(totalOrdersAgg);
+    const finalizedOrders = bucket(finalizedOrdersAgg);
+    const confirmedOrders = bucket(confirmedOrdersAgg);
+    const scheduledOrders = bucket(scheduledOrdersAgg);
+    const completedOrdersCount = finalizedOrders.count;
 
     const revenue = revenueAgg ? Number(revenueAgg._sum.amount ?? 0) : 0;
     const expenses = expensesAgg ? Number(expensesAgg._sum.amount ?? 0) : 0;
@@ -96,6 +130,10 @@ export async function GET(request: Request) {
       orders: ordersCount,
       activeOrders: activeOrdersCount,
       completedOrders: completedOrdersCount,
+      totalOrders,
+      finalizedOrders,
+      confirmedOrders,
+      scheduledOrders,
       upcomingOrders: upcomingOrders.map((o) => ({ id: o.id, code: o.code, status: o.status, eventDate: o.eventDate, client: o.client ? { name: o.client.name } : null })),
     }));
   } catch (error) {

@@ -3,27 +3,38 @@ import { PrismaClient } from "@prisma/client";
 const prisma = new PrismaClient();
 
 async function main() {
+  // Nomes alinhados com a migration 20260902120000_rename_grande_vitoria_add_serra:
+  // a antiga "Grande Vitória" passou a se chamar "Vitória/VV" (mesmo id no banco
+  // real); "Cachoeiro e Regiões" permanece; "Serra" é a filial nova.
   const vitoria = await prisma.branch.upsert({
-    where: { name: "Grande Vitória" },
+    where: { name: "Vitória/VV" },
     update: {},
-    create: { name: "Grande Vitória", city: "Vitória", state: "ES" },
+    create: { name: "Vitória/VV", city: "Vitória", state: "ES" },
   });
   await prisma.branch.upsert({
     where: { name: "Cachoeiro e Regiões" },
     update: {},
     create: { name: "Cachoeiro e Regiões", city: "Cachoeiro de Itapemirim", state: "ES" },
   });
+  await prisma.branch.upsert({
+    where: { name: "Serra" },
+    update: {},
+    create: { name: "Serra", city: "Serra", state: "ES" },
+  });
 
-  const carlos = await prisma.client.upsert({
-    where: { document: "123.456.789-00" },
-    update: {},
-    create: { branchId: vitoria.id, name: "Carlos Eduardo da Silva", email: "carlos.edu@gmail.com", phone: "(11) 98765-4321", document: "123.456.789-00", address: "Av. Paulista, 1000 - Sao Paulo - SP", notes: "Cliente premium." },
-  });
-  const mariana = await prisma.client.upsert({
-    where: { document: "45.678.901/0001-23" },
-    update: {},
-    create: { branchId: vitoria.id, name: "Mariana Alencar Costa", email: "mariana@empresa.com.br", phone: "(11) 99888-7766", document: "45.678.901/0001-23", address: "Rua das Figueiras, 450 - Santo Andre - SP", notes: "Eventos corporativos frequentes." },
-  });
+  // `document` is no longer a global unique field (same CPF/CNPJ is allowed
+  // for clients with different names), so it can't be an upsert `where` key -
+  // look up by (branch + document + name) and create only when absent.
+  const carlos =
+    (await prisma.client.findFirst({ where: { branchId: vitoria.id, document: "123.456.789-00", name: "Carlos Eduardo da Silva" } })) ??
+    (await prisma.client.create({
+      data: { branchId: vitoria.id, name: "Carlos Eduardo da Silva", email: "carlos.edu@gmail.com", phone: "(11) 98765-4321", document: "123.456.789-00", address: "Av. Paulista, 1000 - Sao Paulo - SP", notes: "Cliente premium." },
+    }));
+  const mariana =
+    (await prisma.client.findFirst({ where: { branchId: vitoria.id, document: "45.678.901/0001-23", name: "Mariana Alencar Costa" } })) ??
+    (await prisma.client.create({
+      data: { branchId: vitoria.id, name: "Mariana Alencar Costa", email: "mariana@empresa.com.br", phone: "(11) 99888-7766", document: "45.678.901/0001-23", address: "Rua das Figueiras, 450 - Santo Andre - SP", notes: "Eventos corporativos frequentes." },
+    }));
 
   const ana = await prisma.employee.create({ data: { branchId: vitoria.id, name: "Ana Carolina Santos", role: "Decoradora", phone: "(11) 92222-3333", dailyRate: 350, paymentType: "diaria", notes: "Design floral e cenografia." } });
   const rodrigo = await prisma.employee.create({ data: { branchId: vitoria.id, name: "Rodrigo Vasconcelos", role: "Bartender", phone: "(11) 91111-2222", dailyRate: 250, paymentType: "diaria", notes: "Coqueteis premium." } });

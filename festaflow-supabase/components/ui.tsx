@@ -56,8 +56,8 @@ export function Stat({ label, value, tone = "indigo" }: { label: string; value: 
   return <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><p className="text-[10px] font-black uppercase tracking-wider text-slate-400">{label}</p><p className={`mt-3 rounded-xl px-3 py-2 text-xl font-black ${color}`}>{value}</p></div>;
 }
 
-export function CrudShell({ title, onNew, children }: { title: string; onNew: () => void; children: React.ReactNode }) {
-  return <div className="space-y-5"><div className="flex justify-between"><h3 className="text-lg font-black">{title}</h3><button onClick={onNew} className="rounded-xl bg-indigo-600 px-4 py-2 font-black text-white">Novo</button></div><div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">{children}</div></div>;
+export function CrudShell({ title, onNew, children, newDisabled = false, newLabel = "Novo" }: { title: string; onNew: () => void; children: React.ReactNode; newDisabled?: boolean; newLabel?: string }) {
+  return <div className="space-y-5"><div className="flex justify-between"><h3 className="text-lg font-black">{title}</h3><button onClick={onNew} disabled={newDisabled} className="rounded-xl bg-indigo-600 px-4 py-2 font-black text-white disabled:cursor-not-allowed disabled:opacity-50">{newLabel}</button></div><div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">{children}</div></div>;
 }
 export function ActionButtons({ onEdit, onDelete }: { onEdit: () => void; onDelete: () => void }) {
   return <div><button onClick={onEdit} className="mr-2 text-sm font-bold text-indigo-600">Editar</button><button onClick={onDelete} className="text-sm font-bold text-rose-600">Excluir</button></div>;
@@ -136,11 +136,11 @@ export function CepField({ value, onChange, onFound, id, label = "CEP" }: { valu
     setNotice(null);
     try {
       const address = await fetchCepAddress(digits);
-      if (!address) { setNotice({ tone: "error", text: "CEP nao encontrado. Verifique o numero informado." }); return; }
+      if (!address) { setNotice({ tone: "error", text: "CEP nao encontrado. Verifique o CEP informado." }); return; }
       onChange(address.cep);
       onFound(address);
     } catch {
-      setNotice({ tone: "error", text: "Nao foi possivel consultar o CEP. Preencha o endereco manualmente." });
+      setNotice({ tone: "error", text: "Nao foi possivel consultar o CEP. Verifique sua conexao e tente novamente." });
     } finally {
       setLoading(false);
     }
@@ -173,6 +173,76 @@ export function CepField({ value, onChange, onFound, id, label = "CEP" }: { valu
       {loading && <span className="text-[11px] font-normal normal-case text-slate-400">Buscando endereco...</span>}
       {notice && <span className={`text-[11px] font-normal normal-case ${notice.tone === "error" ? "text-rose-600" : "text-slate-500"}`}>{notice.text}</span>}
     </label>
+  );
+}
+
+// Inline multi-select month calendar. Holds its own draft selection; the
+// "Adicionar N data(s)" button hands the whole set to `onConfirm` in one call
+// and clears the draft, so callers add many dates without reopening anything.
+// Works purely in local "YYYY-MM-DD" strings (never a Date object) so a
+// selected day is never shifted across a timezone boundary - same reasoning
+// as dateOnlyLabel forcing UTC. `disabledDates` (dates already added, or the
+// OS's main date) render struck-through and cannot be toggled, so the caller
+// never receives a duplicate.
+export function MultiDatePicker({ onConfirm, disabledDates = [], unit = "data" }: { onConfirm: (dates: string[]) => void; disabledDates?: string[]; unit?: string }) {
+  const [cursor, setCursor] = useState(() => { const d = new Date(); d.setDate(1); d.setHours(0, 0, 0, 0); return d; });
+  const [selected, setSelected] = useState<string[]>([]);
+  const y = cursor.getFullYear();
+  const m = cursor.getMonth();
+  const firstDow = new Date(y, m, 1).getDay();
+  const daysInMonth = new Date(y, m + 1, 0).getDate();
+  const cells = [...Array(firstDow).fill(null), ...Array.from({ length: daysInMonth }, (_, i) => i + 1)];
+  const disabled = new Set(disabledDates);
+  const keyFor = (day: number) => `${y}-${String(m + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+
+  function toggle(day: number) {
+    const key = keyFor(day);
+    if (disabled.has(key)) return;
+    setSelected((prev) => (prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key].sort()));
+  }
+  function confirm() {
+    if (selected.length === 0) return;
+    onConfirm(selected);
+    setSelected([]);
+  }
+
+  return (
+    <div className="rounded-xl border bg-white p-3">
+      <div className="flex items-center justify-between">
+        <button type="button" onClick={() => setCursor(new Date(y, m - 1, 1))} aria-label="Mes anterior" className="rounded-lg border px-3 py-1 text-sm font-black text-slate-600">‹</button>
+        <span className="text-sm font-black capitalize text-slate-800">{cursor.toLocaleDateString("pt-BR", { month: "long", year: "numeric" })}</span>
+        <button type="button" onClick={() => setCursor(new Date(y, m + 1, 1))} aria-label="Proximo mes" className="rounded-lg border px-3 py-1 text-sm font-black text-slate-600">›</button>
+      </div>
+      <div className="mt-2 grid grid-cols-7 gap-1 text-center text-[10px] font-black uppercase text-slate-400">
+        {["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sab"].map((d) => <div key={d}>{d}</div>)}
+      </div>
+      <div className="mt-1 grid grid-cols-7 gap-1">
+        {cells.map((day, i) => {
+          if (!day) return <div key={i} />;
+          const key = keyFor(day);
+          const isSelected = selected.includes(key);
+          const isDisabled = disabled.has(key);
+          return (
+            <button
+              type="button"
+              key={i}
+              disabled={isDisabled}
+              aria-pressed={isSelected}
+              onClick={() => toggle(day)}
+              className={`aspect-square rounded-lg text-sm font-bold transition ${isSelected ? "bg-indigo-600 text-white shadow" : isDisabled ? "cursor-not-allowed text-slate-300 line-through" : "text-slate-700 hover:bg-indigo-50"}`}
+            >
+              {day}
+            </button>
+          );
+        })}
+      </div>
+      <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+        <span className="text-xs font-bold text-slate-500">{selected.length > 0 ? `${selected.length} ${unit}${selected.length > 1 ? "s" : ""} selecionada${selected.length > 1 ? "s" : ""}` : `Nenhuma ${unit} selecionada`}</span>
+        <button type="button" onClick={confirm} disabled={selected.length === 0} className="rounded-xl bg-indigo-600 px-4 py-2 text-sm font-black text-white disabled:opacity-40">
+          Adicionar {selected.length} {unit}{selected.length > 1 ? "s" : ""}
+        </button>
+      </div>
+    </div>
   );
 }
 
