@@ -246,21 +246,87 @@ function ServicesView({ data, branchId, reload, loading }: { data: Service[]; br
   return <CrudShell title="Servicos" onNew={() => { setEditing(null); setError(""); setOpen(true); }}>{data.map((s) => <div key={s.id} className="rounded-2xl border bg-white p-5 shadow-sm"><div className="flex flex-wrap justify-between gap-2"><span className="rounded-full bg-indigo-50 px-3 py-1 text-[10px] font-black uppercase text-indigo-700">{s.category}</span><ActionButtons onEdit={() => { setEditing(s); setError(""); setForm({ name: s.name, description: s.description || "", price: Number(s.price), durationHours: Number(s.durationHours), category: s.category, active: s.active }); setOpen(true); }} onDelete={() => remove(s.id)} /></div><h3 className="mt-3 font-black">{s.name}</h3><p className="mt-2 text-sm text-slate-500">{s.description}</p><p className="mt-3 font-black text-emerald-600">{money(s.price)}</p></div>)}{open && <Modal title={editing ? "Editar servico" : "Novo servico"} onClose={() => setOpen(false)}><form onSubmit={submit} className="grid gap-3">{error && <p className="rounded-xl bg-rose-50 p-3 text-sm font-bold text-rose-600">{error}</p>}<Input label="Nome" value={form.name} set={(v) => setForm({ ...form, name: v })} required /><Text label="Descricao" value={form.description} set={(v) => setForm({ ...form, description: v })} /><NumberInput label="Preco" value={form.price} set={(v) => setForm({ ...form, price: v })} /><NumberInput label="Duracao horas" value={form.durationHours} set={(v) => setForm({ ...form, durationHours: v })} /><Input label="Categoria" value={form.category} set={(v) => setForm({ ...form, category: v })} required /><Save /></form></Modal>}</CrudShell>;
 }
 
+// Backend-computed summary for an active client search (see
+// /api/orders/summary). Counts one row per OS (never per appointment) and
+// values come from ServiceOrder.totalAmount - same figure as the table's
+// "Valor" column.
+type ClientSearchSummary = { clientNames: string[]; totalOrders: number; totalValue: number; byStatus: Record<string, { count: number; value: number }> };
+const SUMMARY_STATUS_KEYS = ["pendente", "confirmado", "em_andamento", "finalizado", "cancelado"] as const;
+
+function ClientSummaryPanel({ summary, term }: { summary: ClientSearchSummary; term: string }) {
+  const heading = summary.clientNames.length === 1 ? summary.clientNames[0]
+    : summary.clientNames.length > 1 ? `${summary.clientNames.length} clientes: ${summary.clientNames.join(", ")}`
+    : term;
+  return <div className="rounded-2xl border bg-white p-5 shadow-sm">
+    <p className="text-[10px] font-black uppercase tracking-wider text-slate-400">Resumo do cliente</p>
+    <div className="mt-2 flex flex-wrap items-baseline justify-between gap-2">
+      <h4 className="font-black">{heading}</h4>
+      <p className="text-sm font-bold text-slate-500">{summary.totalOrders} OS &middot; {money(summary.totalValue)}</p>
+    </div>
+    <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+      {SUMMARY_STATUS_KEYS.map((k) => {
+        const s = summary.byStatus[k] ?? { count: 0, value: 0 };
+        return <div key={k} className="flex items-center justify-between rounded-xl bg-slate-50 px-3 py-2 text-sm"><span className="font-bold text-slate-600">{statusLabels[k]}</span><span className="font-black text-slate-900">{s.count} OS &middot; {money(s.value)}</span></div>;
+      })}
+      <div className="flex items-center justify-between rounded-xl bg-indigo-50 px-3 py-2 text-sm"><span className="font-black text-indigo-700">TOTAL</span><span className="font-black text-indigo-700">{summary.totalOrders} OS &middot; {money(summary.totalValue)}</span></div>
+    </div>
+  </div>;
+}
+
 function OrdersView({ orders, clients, employees, services, branchId, reload, onOrderSaved, loading }: { orders: Order[]; clients: Client[]; employees: Employee[]; services: Service[]; branchId: string | null; reload: () => Promise<void>; onOrderSaved: (order: Order) => Promise<void>; loading: boolean }) {
   const [open, setOpen] = useState(false); const [print, setPrint] = useState<Order | null>(null); const [editing, setEditing] = useState<Order | null>(null);
   const [recurrenceOpen, setRecurrenceOpen] = useState(false);
   const [sending, setSending] = useState<{ order: Order; channel: SendChannel } | null>(null);
 
+  // Client search. Server-side (never a frontend filter over `orders`): the
+  // debounced term is sent to /api/orders + /api/orders/summary, both of which
+  // re-apply the same branch isolation. Empty term => untouched normal listing
+  // (the `orders` prop). The effect also re-runs when `orders` changes so an
+  // edit/delete/create during an active search refreshes the filtered view.
+  const [search, setSearch] = useState("");
+  const [debounced, setDebounced] = useState("");
+  const [searchResults, setSearchResults] = useState<Order[] | null>(null);
+  const [summary, setSummary] = useState<ClientSearchSummary | null>(null);
+  const [searchLoading, setSearchLoading] = useState(false);
+
+  useEffect(() => {
+    const id = setTimeout(() => setDebounced(search.trim()), 300);
+    return () => clearTimeout(id);
+  }, [search]);
+
+  useEffect(() => {
+    if (!debounced || !branchId) { setSearchResults(null); setSummary(null); setSearchLoading(false); return; }
+    let cancelled = false;
+    setSearchLoading(true);
+    const qs = `?branchId=${encodeURIComponent(branchId)}&clientSearch=${encodeURIComponent(debounced)}`;
+    Promise.all([
+      api<Order[]>(`/api/orders${qs}`),
+      api<ClientSearchSummary>(`/api/orders/summary${qs}`),
+    ]).then(([list, sum]) => {
+      if (cancelled) return;
+      setSearchResults(list); setSummary(sum);
+    }).catch(() => {
+      if (cancelled) return;
+      setSearchResults([]); setSummary(null);
+    }).finally(() => {
+      if (!cancelled) setSearchLoading(false);
+    });
+    return () => { cancelled = true; };
+  }, [debounced, branchId, orders]);
+
+  const isSearching = debounced.length > 0;
+  const displayedOrders = searchResults ?? orders;
+
   async function removeOrder(id: string) { if (!confirm("Excluir OS?")) return; try { await api(`/api/orders/${id}`, { method: "DELETE" }); await reload(); } catch (err) { alert(err instanceof Error ? err.message : "Erro ao excluir OS."); } }
 
   if (loading) return <p className="text-sm text-slate-500">Carregando ordens de servico...</p>;
-  return <div className="space-y-5"><div className="flex flex-wrap justify-between gap-2"><p className="text-sm text-slate-500">OS com multiplos atendimentos, recorrencia, equipe, assinatura e impressao/PDF.</p><div className="flex gap-2"><button onClick={() => setRecurrenceOpen(true)} className="rounded-xl border border-indigo-300 px-4 py-2 font-black text-indigo-600">Nova Recorrencia</button><button onClick={() => { setEditing(null); setOpen(true); }} className="rounded-xl bg-indigo-600 px-4 py-2 font-black text-white">Nova OS</button></div></div><div className="overflow-x-auto rounded-2xl border bg-white"><table className="w-full text-sm"><thead className="bg-slate-50 text-left text-xs uppercase text-slate-500"><tr><th className="p-4">Codigo</th><th className="p-4">Cliente</th><th className="hidden p-4 sm:table-cell">Data</th><th className="hidden p-4 sm:table-cell">Atendimentos</th><th className="hidden p-4 sm:table-cell">Pagamento</th><th className="p-4">Status</th><th className="p-4 text-right">Valor</th><th className="p-4 text-right">Acoes</th></tr></thead><tbody>{orders.map((o) => <tr key={o.id} className="border-t"><td className="p-4 font-mono font-black">{o.code}</td><td className="p-4">{o.client?.name}</td><td className="hidden p-4 sm:table-cell">{new Date(o.eventDate).toLocaleDateString("pt-BR")}</td><td className="hidden p-4 sm:table-cell">{o.appointments?.length ?? 0}</td><td className="hidden p-4 text-xs sm:table-cell">{paymentMethodLabel(o)}</td><td className="p-4"><Badge status={o.status} /></td><td className="p-4 text-right font-black text-indigo-600">{money(o.totalAmount)}</td><td className="p-4 text-right"><div className="flex flex-wrap items-center justify-end gap-x-3 gap-y-1">
+  return <div className="space-y-5"><div className="flex flex-wrap justify-between gap-2"><p className="text-sm text-slate-500">OS com multiplos atendimentos, recorrencia, equipe, assinatura e impressao/PDF.</p><div className="flex gap-2"><button onClick={() => setRecurrenceOpen(true)} className="rounded-xl border border-indigo-300 px-4 py-2 font-black text-indigo-600">Nova Recorrencia</button><button onClick={() => { setEditing(null); setOpen(true); }} className="rounded-xl bg-indigo-600 px-4 py-2 font-black text-white">Nova OS</button></div></div><div className="flex flex-wrap items-center gap-2"><div className="relative flex-1 min-w-[220px]"><span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400">🔎</span><input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Pesquisar cliente..." aria-label="Pesquisar cliente" className="w-full rounded-xl border p-3 pl-9 text-sm" /></div>{search && <button onClick={() => setSearch("")} className="rounded-xl border px-4 py-2 text-sm font-black text-slate-600">Limpar</button>}{searchLoading && <span className="text-xs font-bold text-slate-400">Buscando...</span>}</div><div className="overflow-x-auto rounded-2xl border bg-white"><table className="w-full text-sm"><thead className="bg-slate-50 text-left text-xs uppercase text-slate-500"><tr><th className="p-4">Codigo</th><th className="p-4">Cliente</th><th className="hidden p-4 sm:table-cell">Data</th><th className="hidden p-4 sm:table-cell">Atendimentos</th><th className="hidden p-4 sm:table-cell">Pagamento</th><th className="p-4">Status</th><th className="p-4 text-right">Valor</th><th className="p-4 text-right">Acoes</th></tr></thead><tbody>{displayedOrders.map((o) => <tr key={o.id} className="border-t"><td className="p-4 font-mono font-black">{o.code}</td><td className="p-4">{o.client?.name}</td><td className="hidden p-4 sm:table-cell">{new Date(o.eventDate).toLocaleDateString("pt-BR")}</td><td className="hidden p-4 sm:table-cell">{o.appointments?.length ?? 0}</td><td className="hidden p-4 text-xs sm:table-cell">{paymentMethodLabel(o)}</td><td className="p-4"><Badge status={o.status} /></td><td className="p-4 text-right font-black text-indigo-600">{money(o.totalAmount)}</td><td className="p-4 text-right"><div className="flex flex-wrap items-center justify-end gap-x-3 gap-y-1">
     <button onClick={() => setPrint(o)} className="font-bold">PDF</button>
     <button onClick={() => { setEditing(o); setOpen(true); }} className="font-bold text-indigo-600">Editar</button>
     <button onClick={() => setSending({ order: o, channel: "email" })} className="font-bold text-emerald-600">E-mail</button>
     <button onClick={() => setSending({ order: o, channel: "whatsapp" })} className="font-bold text-emerald-600">WhatsApp</button>
     <button onClick={() => removeOrder(o.id)} className="font-bold text-rose-600">Excluir</button>
-  </div></td></tr>)}</tbody></table></div>{open && <OrderFormModal order={editing} orders={orders} clients={clients} employees={employees} services={services} branchId={branchId} onClose={() => setOpen(false)} reload={reload} onSaved={onOrderSaved} />}{print && <PrintOrder order={print} close={() => setPrint(null)} />}{recurrenceOpen && <RecurrenceModal clients={clients} services={services} employees={employees} branchId={branchId} close={() => setRecurrenceOpen(false)} onCreated={reload} />}{sending && <SendOrderModal order={sending.order} channel={sending.channel} onClose={() => setSending(null)} />}</div>;
+  </div></td></tr>)}</tbody></table></div>{isSearching && !searchLoading && displayedOrders.length === 0 && <div className="rounded-2xl border bg-white p-6 text-sm text-slate-500">Nenhuma Ordem de Servico encontrada para este cliente.</div>}{isSearching && summary && summary.totalOrders > 0 && <ClientSummaryPanel summary={summary} term={debounced} />}{open && <OrderFormModal order={editing} orders={orders} clients={clients} employees={employees} services={services} branchId={branchId} onClose={() => setOpen(false)} reload={reload} onSaved={onOrderSaved} />}{print && <PrintOrder order={print} close={() => setPrint(null)} />}{recurrenceOpen && <RecurrenceModal clients={clients} services={services} employees={employees} branchId={branchId} close={() => setRecurrenceOpen(false)} onCreated={reload} />}{sending && <SendOrderModal order={sending.order} channel={sending.channel} onClose={() => setSending(null)} />}</div>;
 }
 
 // Shared "Nova/Editar OS" form, reused by OrdersView, CalendarView (click an

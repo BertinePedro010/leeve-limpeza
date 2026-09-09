@@ -60,10 +60,20 @@ export async function GET(request: Request) {
   try {
     const auth = await requireAuth();
     requireModule(auth, "orders");
-    const branchId = new URL(request.url).searchParams.get("branchId");
+    const url = new URL(request.url);
+    const branchId = url.searchParams.get("branchId");
+    // Optional partial, case-insensitive client-name search. Applied in the
+    // DB query (never a frontend filter) and AFTER the same branch resolution
+    // as before, so it can only ever narrow the caller's own branch scope -
+    // a search term can never widen it to another filial.
+    const clientSearch = url.searchParams.get("clientSearch")?.trim();
     const canViewFinance = auth.profile.role === "admin" || auth.profile.allowedModules.includes("finance");
     const data = await prisma.serviceOrder.findMany({
-      where: { deletedAt: null, branchId: resolveBranchFilter(auth, branchId) },
+      where: {
+        deletedAt: null,
+        branchId: resolveBranchFilter(auth, branchId),
+        ...(clientSearch ? { client: { name: { contains: clientSearch, mode: "insensitive" as const } } } : {}),
+      },
       orderBy: { eventDate: "asc" },
       include: include(canViewFinance),
     });
