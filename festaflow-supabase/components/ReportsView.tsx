@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useBranch } from "@/lib/branch-context";
 import { api, money, Badge, Select, Input, Stat, paymentMethodLabels, paymentMethodOptions } from "@/components/ui";
 import type { Employee, Service } from "@/components/SaasApp";
@@ -37,6 +37,8 @@ export default function ReportsView({ employees, services, isGlobalAdmin }: { em
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
   const [branchId, setBranchId] = useState(activeBranchId ?? "");
+  const [clientId, setClientId] = useState("");
+  const [clientOptions, setClientOptions] = useState<Array<{ id: string; name: string }>>([]);
   const [employeeId, setEmployeeId] = useState("");
   const [serviceId, setServiceId] = useState("");
   const [status, setStatus] = useState("");
@@ -45,6 +47,27 @@ export default function ReportsView({ employees, services, isGlobalAdmin }: { em
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [showPrint, setShowPrint] = useState(false);
+
+  // The CLIENTE picker is scoped to the selected FILIAL and only relevant for
+  // the "Por Cliente" report. Re-fetched whenever the branch changes; if the
+  // currently selected client is not in the new branch's list it is reset to
+  // "Todos os clientes" so an invalid FILIAL x CLIENTE pair can never be sent.
+  useEffect(() => {
+    if (type !== "clients") return;
+    let cancelled = false;
+    api<Array<{ id: string; name: string }>>(`/api/reports/clients/options?branchId=${encodeURIComponent(branchId)}`)
+      .then((opts) => {
+        if (cancelled) return;
+        setClientOptions(opts);
+        setClientId((current) => (current && opts.some((o) => o.id === current) ? current : ""));
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setClientOptions([]);
+        setClientId("");
+      });
+    return () => { cancelled = true; };
+  }, [type, branchId]);
 
   async function generate() {
     setError(""); setLoading(true); setResult(null);
@@ -55,6 +78,7 @@ export default function ReportsView({ employees, services, isGlobalAdmin }: { em
       params.set("period", period);
       if (period === "personalizado") { params.set("from", from); params.set("to", to); }
       if (employeeId && type !== "employee") params.set("employeeId", employeeId);
+      if (clientId && type === "clients") params.set("clientId", clientId);
       if (serviceId) params.set("serviceId", serviceId);
       if (status) params.set("status", status);
       if (paymentMethod && type === "os") params.set("paymentMethod", paymentMethod);
@@ -70,6 +94,7 @@ export default function ReportsView({ employees, services, isGlobalAdmin }: { em
   const printFilters = {
     periodLabel: periods.find(([p]) => p === period)?.[1] ?? period,
     branchLabel: branchId === "all" ? "Todas" : branches.find((b) => b.id === branchId)?.name ?? branchId,
+    clientLabel: clientId ? clientOptions.find((c) => c.id === clientId)?.name ?? clientId : "Todos os clientes",
     employeeLabel: employeeId ? employees.find((e) => e.id === employeeId)?.name ?? employeeId : "Todos",
     serviceLabel: serviceId ? services.find((s) => s.id === serviceId)?.name ?? serviceId : "Todos",
     status,
@@ -79,10 +104,11 @@ export default function ReportsView({ employees, services, isGlobalAdmin }: { em
     <div className="rounded-2xl border bg-white p-6 shadow-sm">
       <h3 className="font-black">Relatorios</h3>
       <div className="mt-4 grid gap-3 md:grid-cols-3">
-        <label className="grid gap-1 text-xs font-black uppercase text-slate-500">Tipo<Select value={type} set={(v) => setType(v as ReportType)} options={reportTypes} /></label>
-        <label className="grid gap-1 text-xs font-black uppercase text-slate-500">Periodo<Select value={period} set={(v) => setPeriod(v as Period)} options={periods} /></label>
         {type !== "employee" && <label className="grid gap-1 text-xs font-black uppercase text-slate-500">Filial<Select value={branchId} set={setBranchId} options={[...branches.map((b) => [b.id, b.name]), ...(isGlobalAdmin ? [["all", "Todas"]] : [])]} /></label>}
         {type === "employee" && <label className="grid gap-1 text-xs font-black uppercase text-slate-500">Funcionario<Select value={employeeId} set={setEmployeeId} options={employees.map((e) => [e.id, e.name])} /></label>}
+        {type === "clients" && <label className="grid gap-1 text-xs font-black uppercase text-slate-500">Cliente<Select value={clientId} set={setClientId} options={[["", "Todos os clientes"], ...clientOptions.map((c) => [c.id, c.name])]} /></label>}
+        <label className="grid gap-1 text-xs font-black uppercase text-slate-500">Tipo<Select value={type} set={(v) => setType(v as ReportType)} options={reportTypes} /></label>
+        <label className="grid gap-1 text-xs font-black uppercase text-slate-500">Periodo<Select value={period} set={(v) => setPeriod(v as Period)} options={periods} /></label>
         {(type === "appointments" || type === "services" || type === "employees" || type === "clients") && <label className="grid gap-1 text-xs font-black uppercase text-slate-500">Funcionario<Select value={employeeId} set={setEmployeeId} options={[["", "Todos"], ...employees.map((e) => [e.id, e.name])]} /></label>}
         {(type === "appointments" || type === "services" || type === "clients") && <label className="grid gap-1 text-xs font-black uppercase text-slate-500">Servico<Select value={serviceId} set={setServiceId} options={[["", "Todos"], ...services.map((s) => [s.id, s.name])]} /></label>}
         {(type === "appointments" || type === "os" || type === "clients") && <label className="grid gap-1 text-xs font-black uppercase text-slate-500">Status<Select value={status} set={setStatus} options={statuses} /></label>}
@@ -202,7 +228,7 @@ function ReportPrintView({ type, result, filters, close }: { type: ReportType; r
 type ClientServiceLine = { service: string; quantity: number; value: number };
 type ClientReportRow = { clientId: string; client: string; totalServices: number; totalValue: number; services: ClientServiceLine[] };
 type ClientsResult = { data?: ClientReportRow[]; totals?: { services: number; value: number } };
-type ClientsPrintFilters = { periodLabel: string; branchLabel: string; employeeLabel: string; serviceLabel: string; status: string };
+type ClientsPrintFilters = { periodLabel: string; branchLabel: string; clientLabel: string; employeeLabel: string; serviceLabel: string; status: string };
 
 function ClientsReport({ result }: { result: unknown }) {
   const r = result as ClientsResult;
@@ -238,7 +264,7 @@ function ClientsPrintView({ result, filters, close }: { result: unknown; filters
     <div className="no-print sticky top-0 z-10 flex justify-end gap-2 border-b bg-white p-4"><button onClick={() => window.print()} className="rounded-xl bg-indigo-600 px-4 py-2 font-black text-white">Imprimir / Salvar PDF</button><button onClick={close} className="rounded-xl border px-4 py-2 font-black text-slate-600">Fechar</button></div>
     <div className="print-page mx-auto max-w-5xl p-10">
       <div className="flex items-center justify-between border-b pb-6"><div><h1 className="text-2xl font-black">LeeveLimpeza</h1><p className="text-sm text-slate-500">Relatorio: Por Cliente</p></div><p className="text-xs text-slate-500">Gerado em {new Date().toLocaleString("pt-BR")}</p></div>
-      <div className="mt-4 flex flex-wrap gap-4 text-xs text-slate-500"><span>Periodo: {filters.periodLabel}</span><span>Filial: {filters.branchLabel}</span><span>Funcionario: {filters.employeeLabel}</span><span>Servico: {filters.serviceLabel}</span><span>Status: {filters.status || "Todos"}</span></div>
+      <div className="mt-4 flex flex-wrap gap-4 text-xs text-slate-500"><span>Filial: {filters.branchLabel}</span><span>Cliente: {filters.clientLabel}</span><span>Periodo: {filters.periodLabel}</span><span>Funcionario: {filters.employeeLabel}</span><span>Servico: {filters.serviceLabel}</span><span>Status: {filters.status || "Todos"}</span></div>
       {clients.length === 0 && <p className="mt-6 text-sm text-slate-500">Nenhum registro encontrado para os filtros selecionados.</p>}
       {clients.map((c) => <div key={c.clientId} className="mt-6 break-inside-avoid">
         <h2 className="text-lg font-black">CLIENTE: {c.client.toUpperCase()}</h2>

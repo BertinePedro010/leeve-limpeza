@@ -1,7 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import { requireAuth, requireModule, handleAuthzError } from "@/lib/authz";
 import { resolvePeriod, resolveReportBranchFilter } from "@/lib/reports";
-import { ok, serialize } from "@/lib/json";
+import { fail, ok, serialize } from "@/lib/json";
 
 // "Por Cliente" report. Same query shape and same filters as
 // /api/reports/services (one row per OS line item), only grouped by client
@@ -11,6 +11,7 @@ import { ok, serialize } from "@/lib/json";
 //   - periodo / funcionario / status: matched against the parent OS's
 //     appointments (appointments.some), exactly like the services report
 //   - servico: optional service.id filter, same as the services report
+//   - cliente: optional order.clientId filter, validated against branchFilter
 //
 // An OS line is therefore counted once regardless of how many appointment
 // dates the OS has ("OS com multiplas datas" never duplicates), and the value
@@ -28,12 +29,26 @@ export async function GET(request: Request) {
     const serviceId = url.searchParams.get("serviceId");
     const employeeId = url.searchParams.get("employeeId");
     const status = url.searchParams.get("status");
+    const clientId = url.searchParams.get("clientId");
+
+    // FILIAL -> CLIENTE is validated here, never trusted from the frontend: a
+    // clientId is only accepted when that client actually belongs to one of
+    // the branches the caller resolved to (branchFilter). An invalid pair
+    // (e.g. filial = Grande Vitoria, cliente de Cachoeiro) is rejected.
+    if (clientId) {
+      const client = await prisma.client.findFirst({
+        where: { id: clientId, deletedAt: null, branchId: branchFilter },
+        select: { id: true },
+      });
+      if (!client) return fail("Cliente nao pertence a filial selecionada.", 422);
+    }
 
     const items = await prisma.serviceOrderItem.findMany({
       where: {
         service: { branchId: branchFilter, ...(serviceId ? { id: serviceId } : {}) },
         order: {
           deletedAt: null,
+          ...(clientId ? { clientId } : {}),
           appointments: {
             some: {
               date: { gte: from, lte: to },
