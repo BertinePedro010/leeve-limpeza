@@ -13,8 +13,8 @@ export const dateOnly = (d?: string) => (d ? new Date(d).toISOString().slice(0, 
 // stored, regardless of where the browser/server is running.
 export const dateOnlyLabel = (d?: string) => (d ? new Date(d).toLocaleDateString("pt-BR", { timeZone: "UTC" }) : "-");
 
-export const paymentMethodLabels: Record<string, string> = { pix: "PIX", credit_card: "Cartao de credito", debit_card: "Cartao de debito", cash: "Dinheiro" };
-export const paymentMethodOptions: Array<[string, string]> = [["", "Nao informado"], ["pix", "PIX"], ["credit_card", "Cartao de credito"], ["debit_card", "Cartao de debito"], ["cash", "Dinheiro"]];
+export const paymentMethodLabels: Record<string, string> = { pix: "PIX", credit_card: "Cartao de credito", debit_card: "Cartao de debito", cash: "Dinheiro", boleto: "Boleto" };
+export const paymentMethodOptions: Array<[string, string]> = [["", "Nao informado"], ["pix", "PIX"], ["credit_card", "Cartao de credito"], ["debit_card", "Cartao de debito"], ["cash", "Dinheiro"], ["boleto", "Boleto"]];
 
 // A single, reused rule for turning the enum + legacy free-text field into a
 // display string, so OS table, PDF, Financeiro and Relatorios never diverge.

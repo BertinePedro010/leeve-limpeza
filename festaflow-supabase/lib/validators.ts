@@ -13,7 +13,7 @@ export const employeeSchema = z.object({ branchId: z.string().uuid().optional(),
 export const serviceSchema = z.object({ branchId: z.string().uuid().optional(), name: z.string().min(2), description: z.string().optional().nullable(), price: z.coerce.number().nonnegative(), durationHours: z.coerce.number().nonnegative(), category: z.string().min(2), active: z.coerce.boolean().default(true) });
 export const transactionSchema = z.object({ branchId: z.string().uuid().optional(), type: z.enum(["receita", "despesa"]), category: z.string().min(2), description: z.string().min(2), amount: z.coerce.number().nonnegative(), dueDate: z.coerce.date(), paidAt: z.coerce.date().optional().nullable(), status: z.enum(["pago", "pendente"]), orderId: z.string().uuid().optional().nullable() });
 export const orderItemSchema = z.object({ serviceId: z.string().uuid(), quantity: z.coerce.number().int().positive(), unitPrice: z.coerce.number().nonnegative() });
-export const paymentMethodEnum = z.enum(["pix", "credit_card", "debit_card", "cash"]);
+export const paymentMethodEnum = z.enum(["pix", "credit_card", "debit_card", "cash", "boleto"]);
 // paymentMethodLegacy (free text) is intentionally NOT accepted here - it is
 // only ever read for pre-existing records, never written by new/edited orders.
 // The service address is NO LONGER accepted from the client at all (neither

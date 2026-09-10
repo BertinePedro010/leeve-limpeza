@@ -24,7 +24,7 @@ export type OrderForPdf = Prisma.ServiceOrderGetPayload<{ include: typeof orderP
 export { orderPdfInclude };
 
 const statusLabels: Record<string, string> = { pendente: "Agendado", confirmado: "Confirmado", em_andamento: "Em andamento", finalizado: "Realizado", cancelado: "Cancelado" };
-const paymentMethodLabels: Record<string, string> = { pix: "PIX", credit_card: "Cartao de credito", debit_card: "Cartao de debito", cash: "Dinheiro" };
+const paymentMethodLabels: Record<string, string> = { pix: "PIX", credit_card: "Cartao de credito", debit_card: "Cartao de debito", cash: "Dinheiro", boleto: "Boleto" };
 
 function money(value: Prisma.Decimal | number | string): string {
   return Number(value).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });

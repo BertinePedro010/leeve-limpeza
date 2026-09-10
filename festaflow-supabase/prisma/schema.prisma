@@ -42,6 +42,7 @@ enum PaymentMethod {
   credit_card
   debit_card
   cash
+  boleto
 }
 
 enum SendChannel {
