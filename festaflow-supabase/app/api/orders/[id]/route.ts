@@ -2,7 +2,7 @@ import { prisma } from "@/lib/prisma";
 import { requireAuth, requireModule, assertRecordBranchAccess, assertBranchAccess, AuthzError, handleAuthzError } from "@/lib/authz";
 import { orderSchema, orderValidationError } from "@/lib/validators";
 import { syncOrderBilling } from "@/lib/billing";
-import { formatOrderAddressLine } from "@/lib/order-address";
+import { formatOrderAddressLine, orderAddressSnapshot, evaluateClientAddress, clientAddressErrorMessage, hasStructuredOrderAddress } from "@/lib/order-address";
 import { fail, ok, serialize } from "@/lib/json";
 
 function total(items: Array<{ quantity: number; unitPrice: number }>) {
@@ -48,7 +48,7 @@ async function assertSameBranchRelations(
     prisma.service.findMany({ where: { id: { in: serviceIds } } }),
     prisma.employee.findMany({ where: { id: { in: employeeIds } } }),
   ]);
-  if (!client || client.branchId !== branchId) {
+  if (!client || client.branchId !== branchId || client.deletedAt) {
     throw new AuthzError("Cliente nao pertence a filial da OS.", 422);
   }
   if (services.length !== serviceIds.length || services.some((s) => s.branchId !== branchId)) {
@@ -57,6 +57,7 @@ async function assertSameBranchRelations(
   if (employees.length !== employeeIds.length || employees.some((e) => e.branchId !== branchId)) {
     throw new AuthzError("Um ou mais funcionarios nao pertencem a filial da OS.", 422);
   }
+  return client;
 }
 
 export async function PUT(request: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -72,7 +73,31 @@ export async function PUT(request: Request, { params }: { params: Promise<{ id: 
     const branchId = parsed.data.branchId ?? existing.branchId;
     if (branchId !== existing.branchId) assertBranchAccess(auth, branchId);
     const { items, employeeIds, dates: _dates, branchId: _branchId, ...body } = parsed.data;
-    await assertSameBranchRelations(branchId, body.clientId, items.map((i) => i.serviceId), employeeIds);
+    const client = await assertSameBranchRelations(branchId, body.clientId, items.map((i) => i.serviceId), employeeIds);
+
+    // Address rule for an edit. The OS keeps its OWN recorded address as long
+    // as the client is not being changed - editing an old/finished OS (status,
+    // notes, services...) must never rewrite its address just because the
+    // client's cadastro changed later (historical consistency). Only when the
+    // client itself is swapped does the address move to the new client's
+    // cadastro, and then it must be complete.
+    const clientChanged = body.clientId !== existing.clientId;
+    const clientAddressState = evaluateClientAddress(client);
+    let addressUpdate: Record<string, unknown>;
+    if (!clientChanged) {
+      // Same client: preserve. If the OS carries a structured snapshot, keep
+      // it (and refresh the legacy `location` mirror from it); if it only has
+      // the legacy free-text line, leave every address column exactly as-is.
+      addressUpdate = hasStructuredOrderAddress(existing)
+        ? { ...orderAddressSnapshot(existing), location: formatOrderAddressLine(orderAddressSnapshot(existing)) }
+        : {};
+    } else if (clientAddressState === "ok") {
+      const a = orderAddressSnapshot(client);
+      addressUpdate = { ...a, location: formatOrderAddressLine(a) };
+    } else {
+      return fail(clientAddressErrorMessage(clientAddressState), 422, "clientId");
+    }
+
     const data = await prisma.$transaction(async (tx) => {
       await tx.serviceOrderItem.deleteMany({ where: { orderId: id } });
       await tx.orderEmployee.deleteMany({ where: { orderId: id } });
@@ -80,7 +105,7 @@ export async function PUT(request: Request, { params }: { params: Promise<{ id: 
         where: { id },
         data: {
           ...body,
-          location: formatOrderAddressLine(body),
+          ...addressUpdate,
           branchId,
           totalAmount: total(items),
           items: { create: items },

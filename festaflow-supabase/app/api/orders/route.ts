@@ -3,7 +3,7 @@ import type { Prisma } from "@prisma/client";
 import { requireAuth, requireModule, resolveBranchIdForCreate, resolveBranchFilter, AuthzError, handleAuthzError } from "@/lib/authz";
 import { orderSchema, orderValidationError } from "@/lib/validators";
 import { syncOrderBilling } from "@/lib/billing";
-import { formatOrderAddressLine } from "@/lib/order-address";
+import { formatOrderAddressLine, orderAddressSnapshot, evaluateClientAddress, clientAddressErrorMessage } from "@/lib/order-address";
 import { fail, ok, serialize } from "@/lib/json";
 
 // Must be called with the *transaction* client when running inside
@@ -34,6 +34,9 @@ function include(canViewFinance: boolean) {
   return { client: true, branch: { select: { id: true, name: true, city: true } }, items: { include: { service: true } }, employees: { include: { employee: true } }, transactions: canViewFinance, appointments: { include: { employee: { select: { id: true, name: true } } }, orderBy: [{ date: "asc" as const }, { startTime: "asc" as const }] } };
 }
 
+// Returns the validated client so the caller can snapshot its address into
+// the OS without a second query - the client registration is the single
+// source of truth for a new/edited OS's service address.
 async function assertSameBranchRelations(
   branchId: string,
   clientId: string,
@@ -45,7 +48,7 @@ async function assertSameBranchRelations(
     prisma.service.findMany({ where: { id: { in: serviceIds } } }),
     prisma.employee.findMany({ where: { id: { in: employeeIds } } }),
   ]);
-  if (!client || client.branchId !== branchId) {
+  if (!client || client.branchId !== branchId || client.deletedAt) {
     throw new AuthzError("Cliente nao pertence a filial da OS.", 422);
   }
   if (services.length !== serviceIds.length || services.some((s) => s.branchId !== branchId)) {
@@ -54,6 +57,7 @@ async function assertSameBranchRelations(
   if (employees.length !== employeeIds.length || employees.some((e) => e.branchId !== branchId)) {
     throw new AuthzError("Um ou mais funcionarios nao pertencem a filial da OS.", 422);
   }
+  return client;
 }
 
 export async function GET(request: Request) {
@@ -92,7 +96,17 @@ export async function POST(request: Request) {
     const canViewFinance = auth.profile.role === "admin" || auth.profile.allowedModules.includes("finance");
     const branchId = resolveBranchIdForCreate(auth, parsed.data.branchId);
     const { items, employeeIds, dates, branchId: _branchId, ...body } = parsed.data;
-    await assertSameBranchRelations(branchId, body.clientId, items.map((i) => i.serviceId), employeeIds);
+    const client = await assertSameBranchRelations(branchId, body.clientId, items.map((i) => i.serviceId), employeeIds);
+
+    // The service address is taken exclusively from the client's cadastro -
+    // never from the request body. A new OS cannot be created for a client
+    // whose address is missing or incomplete (frontend guards this too, but
+    // this is the real trust boundary).
+    const clientAddressState = evaluateClientAddress(client);
+    if (clientAddressState !== "ok") {
+      return fail(clientAddressErrorMessage(clientAddressState), 422, "clientId");
+    }
+    const address = orderAddressSnapshot(client);
 
     // dates omitted (or empty): preserve prior behavior - exactly one
     // appointment mirroring eventDate/startTime/endTime. dates present: one
@@ -111,7 +125,8 @@ export async function POST(request: Request) {
       const order = await tx.serviceOrder.create({
         data: {
           ...body,
-          location: formatOrderAddressLine(body),
+          ...address,
+          location: formatOrderAddressLine(address),
           branchId,
           createdBy: auth.userId,
           code: await nextCode(tx, branchId),

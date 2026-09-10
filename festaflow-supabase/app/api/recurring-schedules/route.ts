@@ -2,6 +2,7 @@ import { prisma } from "@/lib/prisma";
 import type { Prisma } from "@prisma/client";
 import { requireAuth, requireModule, resolveBranchIdForCreate, resolveBranchFilter, AuthzError, handleAuthzError } from "@/lib/authz";
 import { recurringScheduleSchema } from "@/lib/validators";
+import { formatOrderAddressLine, orderAddressSnapshot, evaluateClientAddress, clientAddressErrorMessage } from "@/lib/order-address";
 import { fail, ok, serialize } from "@/lib/json";
 import { generateAppointments } from "@/lib/recurrence";
 
@@ -43,13 +44,22 @@ export async function POST(request: Request) {
       prisma.service.findUnique({ where: { id: parsed.data.serviceId } }),
       prisma.employee.findMany({ where: { id: { in: parsed.data.employeeIds } } }),
     ]);
-    if (!client || client.branchId !== branchId) throw new AuthzError("Cliente nao pertence a filial informada.", 422);
+    if (!client || client.branchId !== branchId || client.deletedAt) throw new AuthzError("Cliente nao pertence a filial informada.", 422);
     if (!service || service.branchId !== branchId) throw new AuthzError("Servico nao pertence a filial informada.", 422);
     if (employees.length !== parsed.data.employeeIds.length || employees.some((e) => e.branchId !== branchId)) {
       throw new AuthzError("Um ou mais funcionarios nao pertencem a filial informada.", 422);
     }
 
-    const { location, employeeIds, ...schedulePayload } = parsed.data;
+    // The recurrence's OS snapshots its service address from the client's
+    // cadastro, exactly like a normal OS - `location` from the payload is
+    // ignored. A recurrence cannot start for a client with no usable address.
+    const clientAddressState = evaluateClientAddress(client);
+    if (clientAddressState !== "ok") {
+      return fail(clientAddressErrorMessage(clientAddressState), 422, "clientId");
+    }
+    const address = orderAddressSnapshot(client);
+
+    const { location: _location, employeeIds, ...schedulePayload } = parsed.data;
 
     const result = await prisma.$transaction(async (tx) => {
       const order = await tx.serviceOrder.create({
@@ -60,7 +70,8 @@ export async function POST(request: Request) {
           eventDate: parsed.data.startDate,
           startTime: parsed.data.startTime,
           endTime: parsed.data.endTime,
-          location,
+          ...address,
+          location: formatOrderAddressLine(address),
           status: "confirmado",
           totalAmount: parsed.data.price,
           createdBy: auth.userId,

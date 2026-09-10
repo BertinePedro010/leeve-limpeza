@@ -16,12 +16,12 @@ export const orderItemSchema = z.object({ serviceId: z.string().uuid(), quantity
 export const paymentMethodEnum = z.enum(["pix", "credit_card", "debit_card", "cash"]);
 // paymentMethodLegacy (free text) is intentionally NOT accepted here - it is
 // only ever read for pre-existing records, never written by new/edited orders.
-// Address is captured as structured fields (not a single free-text
-// `location`) so the OS form, PDF and e-mail can all render it consistently.
-// `location` itself is no longer accepted from the client - the API routes
-// compute it server-side from these fields (see lib/order-address.ts) purely
-// to keep the legacy column populated for any code still reading it directly.
-export const orderSchema = z.object({ branchId: z.string().uuid().optional(), clientId: z.string().uuid(), eventDate: z.coerce.date(), startTime: z.string().min(1), endTime: z.string().min(1), addressZip: z.string().optional().nullable(), addressStreet: z.string().min(2), addressNumber: z.string().min(1), addressNeighborhood: z.string().min(2), addressCity: z.string().min(2), addressState: z.string().length(2), addressReference: z.string().optional().nullable(), status: z.enum(["pendente", "confirmado", "em_andamento", "finalizado", "cancelado"]), paymentMethod: z.preprocess((v) => (v === "" ? undefined : v), paymentMethodEnum.optional().nullable()), notes: z.string().optional().nullable(), signatureName: z.string().optional().nullable(), signatureDate: z.coerce.date().optional().nullable(), employeeIds: z.array(z.string().uuid()).default([]), items: z.array(orderItemSchema).min(1), dates: z.array(z.coerce.date()).optional() });
+// The service address is NO LONGER accepted from the client at all (neither
+// the structured fields nor `location`): the API routes snapshot it from the
+// selected client's cadastro (see lib/order-address.ts + app/api/orders) so
+// the client registration is the single source of truth. Any `address*` keys
+// sent in the payload are silently ignored by this schema.
+export const orderSchema = z.object({ branchId: z.string().uuid().optional(), clientId: z.string().uuid(), eventDate: z.coerce.date(), startTime: z.string().min(1), endTime: z.string().min(1), status: z.enum(["pendente", "confirmado", "em_andamento", "finalizado", "cancelado"]), paymentMethod: z.preprocess((v) => (v === "" ? undefined : v), paymentMethodEnum.optional().nullable()), notes: z.string().optional().nullable(), signatureName: z.string().optional().nullable(), signatureDate: z.coerce.date().optional().nullable(), employeeIds: z.array(z.string().uuid()).default([]), items: z.array(orderItemSchema).min(1), dates: z.array(z.coerce.date()).optional() });
 
 export const appointmentStatusEnum = z.enum(["pendente", "confirmado", "em_andamento", "finalizado", "cancelado"]);
 export const appointmentCreateSchema = z.object({ orderId: z.string().uuid(), employeeId: z.string().uuid().optional().nullable(), dates: z.array(z.coerce.date()).min(1), startTime: z.string().min(1), endTime: z.string().min(1), notes: z.string().optional().nullable() });
@@ -41,7 +41,9 @@ export const recurringScheduleSchema = z.object({
   price: z.coerce.number().nonnegative(),
   startDate: z.coerce.date(),
   endDate: z.coerce.date().optional().nullable(),
-  location: z.string().min(2),
+  // Optional/ignored: the recurrence's OS snapshots its address from the
+  // client's cadastro, exactly like a normal OS (see app/api/recurring-schedules).
+  location: z.string().optional().nullable(),
   employeeIds: z.array(z.string().uuid()).default([]),
 });
 
@@ -80,11 +82,6 @@ const orderFieldMessages: Record<string, string> = {
   eventDate: "Informe a data do evento.",
   startTime: "Informe o horario de inicio do atendimento.",
   endTime: "Informe o horario de termino do atendimento.",
-  addressStreet: "Informe a rua/logradouro do endereco.",
-  addressNumber: "Informe o numero do endereco.",
-  addressNeighborhood: "Informe o bairro.",
-  addressCity: "Informe a cidade.",
-  addressState: "Informe o estado (UF).",
   status: "Selecione um status valido.",
   items: "Adicione ao menos um servico a OS.",
   employeeIds: "Verifique os funcionarios selecionados.",
