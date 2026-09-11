@@ -717,8 +717,7 @@ function RecurrenceModal({ clients, services, employees, branchId, close, onCrea
 }
 
 // Downloads the server-generated PDF (lib/pdf.ts via GET /api/orders/:id/pdf)
-// as a real file - distinct from PrintOrder's window.print() flow below,
-// which stays for the browser print/physical-signature use case.
+// as a real file.
 async function downloadOrderPdf(order: Order) {
   try {
     const res = await fetch(`/api/orders/${order.id}/pdf`);
@@ -734,6 +733,45 @@ async function downloadOrderPdf(order: Order) {
     URL.revokeObjectURL(a.href);
   } catch (err) {
     alert(err instanceof Error ? err.message : "Erro ao baixar o PDF da OS.");
+  }
+}
+
+// "Imprimir" prints the exact same server-generated PDF "Baixar PDF" uses -
+// not a separate HTML/CSS print rendering of `order`. A recurring OS's full
+// paginated appointment table, running header, page numbers and signature
+// area only exist reliably in lib/pdf.ts's PDFKit output (browsers have no
+// dependable way to repeat a dynamic "Pagina X de Y" footer per page via
+// @media print), so printing the PDF itself is the only way to guarantee
+// the print preview is truly identical to the download, for every OS
+// (avulsa or recorrente) with no separate logic to keep in sync.
+// Opens a real top-level tab (not a hidden iframe) so the browser's own PDF
+// viewer and print controls are available as a fallback if the automatic
+// print() call is blocked or unsupported by the viewer.
+async function printOrderPdf(order: Order) {
+  const printWindow = window.open("", "_blank");
+  if (!printWindow) {
+    alert("Nao foi possivel abrir a janela de impressao. Verifique se o navegador esta bloqueando pop-ups para este site.");
+    return;
+  }
+  try {
+    const res = await fetch(`/api/orders/${order.id}/pdf`);
+    if (!res.ok) {
+      const data = await res.json().catch(() => null);
+      throw new Error(data?.message || "Erro ao gerar o PDF para impressao.");
+    }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    printWindow.location.href = url;
+    printWindow.addEventListener("load", () => {
+      printWindow.focus();
+      printWindow.print();
+    });
+    // Revoked well after the print dialog would have opened - the window
+    // keeps its own reference to the loaded bytes by then.
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  } catch (err) {
+    printWindow.close();
+    alert(err instanceof Error ? err.message : "Erro ao gerar o PDF para impressao.");
   }
 }
 
@@ -818,11 +856,14 @@ function SendOrderModal({ order, channel, onClose }: { order: Order; channel: Se
   </Modal>;
 }
 
-// Professional, multi-page-safe OS document. Uses the same window.print() +
-// report-table/@page CSS pattern already validated for the Relatorios PDF
-// (app/globals.css) - no PDF library added. Only ever renders values already
-// present on `order` (server-computed totalAmount, real appointment/employee
-// records) - never re-derives numbers on the client.
+// On-screen preview of the OS - what "Imprimir" and "Baixar PDF" actually
+// produce is the server-generated PDF (lib/pdf.ts), not this HTML: browsers
+// have no reliable way to repeat a dynamic "Pagina X de Y" footer per page
+// via @media print, so this markup is not asked to be pixel-identical to
+// the PDF's pagination/header/footer - only the same order/content overall.
+// Only ever renders values already present on `order` (server-computed
+// totalAmount, real appointment/employee records) - never re-derives
+// numbers on the client.
 function PrintOrder({ order, close }: { order: Order; close: () => void }) {
   const employeeNames = order.employees.map((e) => e.employee.name).join(", ") || "Equipe nao definida";
   const [sending, setSending] = useState<SendChannel | null>(null);
@@ -909,7 +950,7 @@ function PrintOrder({ order, close }: { order: Order; close: () => void }) {
     </div>
 
     <div className="no-print mt-8 flex flex-wrap gap-3">
-      <button onClick={() => window.print()} className="rounded-xl bg-indigo-600 px-4 py-2 font-black text-white">Gerar PDF / Imprimir</button>
+      <button onClick={() => printOrderPdf(order)} className="rounded-xl bg-indigo-600 px-4 py-2 font-black text-white">Imprimir</button>
       <button onClick={() => downloadOrderPdf(order)} className="rounded-xl border border-indigo-300 px-4 py-2 font-black text-indigo-600">Baixar PDF</button>
       <button onClick={() => setSending("email")} className="rounded-xl border border-emerald-300 px-4 py-2 font-black text-emerald-600">Enviar por e-mail</button>
       <button onClick={() => setSending("whatsapp")} className="rounded-xl border border-emerald-300 px-4 py-2 font-black text-emerald-600">Enviar pelo WhatsApp</button>

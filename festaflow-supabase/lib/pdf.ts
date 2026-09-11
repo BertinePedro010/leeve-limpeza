@@ -203,6 +203,30 @@ export function buildOrderPdf(order: OrderForPdf): Promise<Buffer> {
       doc.moveDown();
     }
 
+    // Signature area - always last, after every page of content (including
+    // every appointment row), never mid-document. pageBreakIfNeeded keeps
+    // the two boxes and their labels together as one block instead of
+    // splitting across a page boundary. Mirrors PrintOrder's own
+    // signature-block exactly (same two roles, same fallback name) so PDF
+    // and print never show different signature fields.
+    pageBreakIfNeeded(doc, 90);
+    doc.moveDown(2);
+    const sigY = doc.y;
+    const sigColGap = 20;
+    const sigColWidth = (CONTENT_WIDTH - sigColGap) / 2;
+    const sigLeftX = PAGE_LEFT;
+    const sigRightX = PAGE_LEFT + sigColWidth + sigColGap;
+    doc.strokeColor("#000");
+    doc.moveTo(sigLeftX, sigY).lineTo(sigLeftX + sigColWidth, sigY).stroke();
+    doc.moveTo(sigRightX, sigY).lineTo(sigRightX + sigColWidth, sigY).stroke();
+    doc.font("Helvetica-Bold").fontSize(9).fillColor("#000");
+    doc.text("Assinatura do cliente", sigLeftX, sigY + 6, { width: sigColWidth, height: 14, align: "center" });
+    doc.text("Assinatura do responsavel / funcionario", sigRightX, sigY + 6, { width: sigColWidth, height: 14, align: "center" });
+    doc.font("Helvetica").fontSize(9);
+    doc.text(order.signatureName || order.client?.name || "-", sigLeftX, sigY + 20, { width: sigColWidth, height: 14, align: "center" });
+    doc.text("LeeveLimpeza", sigRightX, sigY + 20, { width: sigColWidth, height: 14, align: "center" });
+    doc.y = sigY + 40;
+
     // Page numbers + a running header on every page after the first (the
     // first page already carries the full header) - added as a final pass
     // over every buffered page, since the total page count is only known
