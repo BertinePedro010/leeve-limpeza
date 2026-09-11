@@ -38,7 +38,7 @@ export class ApiError extends Error {
 export async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
   const res = await fetch(path, { ...options, headers: { "Content-Type": "application/json", ...(options.headers || {}) } });
   const data = await res.json().catch(() => null);
-  if (!res.ok) throw new ApiError(data?.message || "Erro na API", data?.field);
+  if (!res.ok) throw new ApiError(data?.message || "Nao foi possivel concluir esta operacao agora. Tente novamente.", data?.field);
   return data;
 }
 
@@ -62,8 +62,14 @@ export function CrudShell({ title, onNew, children, newDisabled = false, newLabe
 export function ActionButtons({ onEdit, onDelete }: { onEdit: () => void; onDelete: () => void }) {
   return <div><button onClick={onEdit} className="mr-2 text-sm font-bold text-indigo-600">Editar</button><button onClick={onDelete} className="text-sm font-bold text-rose-600">Excluir</button></div>;
 }
-export function Input({ label, value, set, required, type = "text", id, error }: { label: string; value: string; set: (v: string) => void; required?: boolean; type?: string; id?: string; error?: boolean }) {
-  return <label className="grid gap-1 text-xs font-black uppercase text-slate-500">{label}<input id={id} type={type} required={required} value={value} onChange={(e) => set(e.target.value)} className={`rounded-xl border p-3 text-sm font-normal normal-case text-slate-800 ${error ? "border-rose-500 ring-1 ring-rose-500" : ""}`} /></label>;
+// `error` doubles as both a plain highlight flag (boolean, pre-existing
+// usage) and a real message (string) - passing a string renders it under the
+// field with aria-describedby, in addition to the red border.
+export function Input({ label, value, set, required, type = "text", id, error }: { label: string; value: string; set: (v: string) => void; required?: boolean; type?: string; id?: string; error?: boolean | string }) {
+  const message = typeof error === "string" ? error : undefined;
+  const hasError = !!error;
+  const errorId = id && message ? `${id}-error` : undefined;
+  return <label className="grid gap-1 text-xs font-black uppercase text-slate-500">{label}<input id={id} type={type} required={required} value={value} onChange={(e) => set(e.target.value)} aria-invalid={hasError || undefined} aria-describedby={errorId} className={`rounded-xl border p-3 text-sm font-normal normal-case text-slate-800 ${hasError ? "border-rose-500 ring-1 ring-rose-500" : ""}`} />{message && <span id={errorId} role="alert" className="text-[11px] font-normal normal-case text-rose-600">{message}</span>}</label>;
 }
 export function NumberInput({ label, value, set }: { label: string; value: number; set: (v: number) => void }) {
   return <label className="grid gap-1 text-xs font-black uppercase text-slate-500">{label}<input type="number" step="0.01" value={value} onChange={(e) => set(Number(e.target.value))} className="rounded-xl border p-3 text-sm font-normal text-slate-800" /></label>;
@@ -71,11 +77,41 @@ export function NumberInput({ label, value, set }: { label: string; value: numbe
 export function Text({ label, value, set }: { label: string; value: string; set: (v: string) => void }) {
   return <label className="grid gap-1 text-xs font-black uppercase text-slate-500">{label}<textarea value={value} onChange={(e) => set(e.target.value)} className="rounded-xl border p-3 text-sm font-normal normal-case text-slate-800" /></label>;
 }
-export function Select({ value, set, options, id, error }: { value: string; set: (v: string) => void; options: Array<[string, string] | string[]>; id?: string; error?: boolean }) {
-  return <select id={id} value={value} onChange={(e) => set(e.target.value)} className={`rounded-xl border p-3 text-sm ${error ? "border-rose-500 ring-1 ring-rose-500" : ""}`}>{options.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select>;
+// Same boolean|string `error` convention as Input above. Always wrapped in a
+// single block element (message or not) so it keeps acting as exactly one
+// grid item wherever it's dropped directly into a CSS grid (see OrderFormModal).
+export function Select({ value, set, options, id, error }: { value: string; set: (v: string) => void; options: Array<[string, string] | string[]>; id?: string; error?: boolean | string }) {
+  const message = typeof error === "string" ? error : undefined;
+  const hasError = !!error;
+  const errorId = id && message ? `${id}-error` : undefined;
+  return <div className="grid gap-1"><select id={id} value={value} onChange={(e) => set(e.target.value)} aria-invalid={hasError || undefined} aria-describedby={errorId} className={`rounded-xl border p-3 text-sm ${hasError ? "border-rose-500 ring-1 ring-rose-500" : ""}`}>{options.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select>{message && <span id={errorId} role="alert" className="text-[11px] font-normal normal-case text-rose-600">{message}</span>}</div>;
 }
 export function Save() {
   return <button className="rounded-xl bg-indigo-600 p-3 font-black text-white">Salvar</button>;
+}
+
+// Scrolls to and focuses the field whose input carries this DOM id - shared
+// by every form that wires up per-field ids (client, OS, recorrencia)
+// instead of each screen reimplementing its own scroll/focus logic.
+export function focusFormField(id: string) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.scrollIntoView({ behavior: "smooth", block: "center" });
+  if (el instanceof HTMLElement) el.focus();
+}
+
+// Top-of-form banner listing every field currently in error, each entry
+// clickable to jump straight to that field. `fieldPrefix` is the DOM id
+// prefix used for that field's input (e.g. "client-field-", "os-field-").
+export function FieldErrorSummary({ title, errors, fieldPrefix }: { title: string; errors: Record<string, string>; fieldPrefix: string }) {
+  const entries = Object.entries(errors);
+  if (entries.length === 0) return null;
+  return <div role="alert" className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">
+    <p className="font-black">{title}</p>
+    <ul className="mt-2 space-y-1">
+      {entries.map(([field, message]) => <li key={field}><button type="button" onClick={() => focusFormField(`${fieldPrefix}${field}`)} className="text-left font-bold normal-case underline decoration-rose-300 underline-offset-2 hover:text-rose-900">{message}</button></li>)}
+    </ul>
+  </div>;
 }
 
 export type CepAddress = { cep: string; street: string; neighborhood: string; city: string; state: string };

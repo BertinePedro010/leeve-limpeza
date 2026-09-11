@@ -95,7 +95,7 @@ export async function PUT(request: Request, { params }: { params: Promise<{ id: 
       const a = orderAddressSnapshot(client);
       addressUpdate = { ...a, location: formatOrderAddressLine(a) };
     } else {
-      return fail(clientAddressErrorMessage(clientAddressState), 422, "clientId");
+      return fail(clientAddressErrorMessage(clientAddressState, client), 422, "clientId");
     }
 
     const data = await prisma.$transaction(async (tx) => {

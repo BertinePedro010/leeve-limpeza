@@ -104,7 +104,7 @@ export async function POST(request: Request) {
     // this is the real trust boundary).
     const clientAddressState = evaluateClientAddress(client);
     if (clientAddressState !== "ok") {
-      return fail(clientAddressErrorMessage(clientAddressState), 422, "clientId");
+      return fail(clientAddressErrorMessage(clientAddressState, client), 422, "clientId");
     }
     const address = orderAddressSnapshot(client);
 

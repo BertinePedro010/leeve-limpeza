@@ -55,7 +55,7 @@ export async function POST(request: Request) {
     // ignored. A recurrence cannot start for a client with no usable address.
     const clientAddressState = evaluateClientAddress(client);
     if (clientAddressState !== "ok") {
-      return fail(clientAddressErrorMessage(clientAddressState), 422, "clientId");
+      return fail(clientAddressErrorMessage(clientAddressState, client), 422, "clientId");
     }
     const address = orderAddressSnapshot(client);
 

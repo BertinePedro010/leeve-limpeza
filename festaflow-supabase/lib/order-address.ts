@@ -61,13 +61,41 @@ export function evaluateClientAddress(c: OrderAddressFields): ClientAddressState
   return "missing";
 }
 
-// User-facing messages, shared between the API routes and the OS form so the
-// wording never drifts between the client-side guard and the server rejection.
+// User-facing messages, shared between the API routes and every OS/recorrencia
+// form so the wording never drifts between the client-side guard and the
+// server rejection (see lib/validators.ts orderValidationError for the same
+// pattern applied to plain field errors).
 export const CLIENT_ADDRESS_MISSING_MESSAGE =
-  "Nao e possivel criar esta OS porque o cliente nao possui endereco cadastrado. Cadastre ou complete o endereco do cliente antes de criar a Ordem de Servico.";
+  "Nao e possivel criar esta OS porque o cliente nao possui endereco cadastrado. Cadastre o endereco do cliente antes de continuar.";
 export const CLIENT_ADDRESS_INCOMPLETE_MESSAGE =
   "O endereco do cliente esta incompleto. Preencha Rua, Numero, Bairro, Cidade e Estado no cadastro do cliente antes de criar a OS.";
 
-export function clientAddressErrorMessage(state: ClientAddressState): string {
-  return state === "missing" ? CLIENT_ADDRESS_MISSING_MESSAGE : CLIENT_ADDRESS_INCOMPLETE_MESSAGE;
+const ADDRESS_FIELD_LABELS: Array<[keyof OrderAddressFields, string]> = [
+  ["addressStreet", "Rua"],
+  ["addressNumber", "Numero"],
+  ["addressNeighborhood", "Bairro"],
+  ["addressCity", "Cidade"],
+  ["addressState", "Estado/UF"],
+];
+
+// Which of the 5 required address fields are missing, in a fixed order, so
+// "Faltam: X e Y" is built identically everywhere it appears.
+export function missingAddressFieldLabels(c: OrderAddressFields): string[] {
+  return ADDRESS_FIELD_LABELS.filter(([key]) => !c[key]).map(([, label]) => label);
+}
+
+function joinPt(items: string[]): string {
+  if (items.length <= 1) return items.join("");
+  return `${items.slice(0, -1).join(", ")} e ${items[items.length - 1]}`;
+}
+
+// `client` is optional only so old call sites (state alone) still compile -
+// every real caller should pass it: it is what turns "endereco incompleto"
+// into "Faltam: Numero e Estado/UF" instead of a generic sentence.
+export function clientAddressErrorMessage(state: ClientAddressState, client?: (OrderAddressFields & { name?: string }) | null): string {
+  if (state === "missing" || !client) return CLIENT_ADDRESS_MISSING_MESSAGE;
+  const missing = missingAddressFieldLabels(client);
+  if (missing.length === 0) return CLIENT_ADDRESS_INCOMPLETE_MESSAGE;
+  const who = client.name ? `O cliente ${client.name}` : "O cliente";
+  return `${who} nao possui endereco completo. Faltam: ${joinPt(missing)}. Complete o endereco do cliente antes de continuar.`;
 }

@@ -78,19 +78,54 @@ export const userResetPasswordSchema = z.object({ password: z.string().min(8) })
 // returned field name to scroll to and highlight the exact control that
 // needs fixing (see components/SaasApp.tsx OrderFormModal).
 const orderFieldMessages: Record<string, string> = {
-  clientId: "Selecione o cliente.",
-  eventDate: "Informe a data do evento.",
-  startTime: "Informe o horario de inicio do atendimento.",
-  endTime: "Informe o horario de termino do atendimento.",
+  clientId: "Selecione um cliente antes de continuar.",
+  eventDate: "Informe uma data valida para o atendimento.",
+  startTime: "Informe um horario de inicio valido para o atendimento.",
+  endTime: "Informe um horario de termino valido para o atendimento.",
   status: "Selecione um status valido.",
-  items: "Adicione ao menos um servico a OS.",
+  items: "Selecione pelo menos um servico para criar a OS.",
   employeeIds: "Verifique os funcionarios selecionados.",
+};
+
+// Sub-messages for orderItemSchema issues (path like ["items", 0, "quantity"])
+// - these fail inside the services list, so they still point the frontend at
+// the "items" section (there is no single input per row to focus instead).
+const orderItemFieldMessages: Record<string, string> = {
+  serviceId: "Selecione um servico valido para cada item adicionado.",
+  quantity: "Informe uma quantidade valida (maior que zero) para o servico.",
+  unitPrice: "Informe um valor maior ou igual a R$ 0,00 para o servico.",
 };
 
 export function orderValidationError(error: z.ZodError): { message: string; field?: string } {
   const issue = error.issues[0];
-  const field = issue ? String(issue.path[0] ?? "") : "";
+  const path = issue?.path ?? [];
+  const field = String(path[0] ?? "");
+  if (field === "items" && path.length > 1) {
+    const subField = String(path[2] ?? "");
+    return { message: orderItemFieldMessages[subField] || "Verifique os servicos adicionados a OS.", field: "items" };
+  }
   const message = orderFieldMessages[field];
   if (message) return { message, field };
   return { message: issue ? issue.message : "Nao foi possivel validar a OS." };
+}
+
+// Same pattern as orderValidationError above, for clientSchema - keeps the
+// client form's field-error/focus behaviour driven by the same server-side
+// source of truth instead of a screen-specific message table.
+const clientFieldMessages: Record<string, string> = {
+  name: "Informe o nome do cliente.",
+  email: "O e-mail informado nao e valido. Exemplo: cliente@empresa.com.",
+  addressStreet: "Informe a rua/logradouro do endereco.",
+  addressNumber: "Informe o numero do endereco.",
+  addressNeighborhood: "Informe o bairro do endereco.",
+  addressCity: "Informe a cidade do endereco.",
+  addressState: "Selecione o estado (UF) do endereco.",
+};
+
+export function clientValidationError(error: z.ZodError): { message: string; field?: string } {
+  const issue = error.issues[0];
+  const field = issue ? String(issue.path[0] ?? "") : "";
+  const message = clientFieldMessages[field];
+  if (message) return { message, field };
+  return { message: issue ? issue.message : "Nao foi possivel validar o cliente." };
 }

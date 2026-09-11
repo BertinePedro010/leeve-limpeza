@@ -29,7 +29,7 @@ export async function checkDuplicateClient(
     select: { id: true, name: true, document: true },
   });
   if (candidates.some((c) => isDuplicateClient({ name, document }, c))) {
-    return fail(DUPLICATE_CLIENT_MESSAGE, 409);
+    return fail(DUPLICATE_CLIENT_MESSAGE, 409, "document");
   }
   return null;
 }
