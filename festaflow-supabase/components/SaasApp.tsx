@@ -13,6 +13,7 @@ import UsersView from "@/components/UsersView";
 import TrainingView from "@/components/TrainingView";
 import { normalizeWhatsappPhone, buildOrderWhatsappMessage, buildWhatsappShareUrl } from "@/lib/whatsapp";
 import { ORDER_STATUS_VALUES, orderStatusLabels } from "@/lib/order-status";
+import { recurrenceTypeLabel, recurrenceFrequencyLabel, recurrenceDayLabel, recurrencePeriodLabel } from "@/lib/recurrence-label";
 
 type Tab = "dashboard" | "clients" | "employees" | "services" | "orders" | "calendar" | "finance" | "reports" | "training" | "branches" | "users";
 export type Client = { id: string; name: string; email?: string; phone?: string; document?: string; address?: string; addressZip?: string | null; addressStreet?: string | null; addressNumber?: string | null; addressNeighborhood?: string | null; addressCity?: string | null; addressState?: string | null; addressReference?: string | null; notes?: string };
@@ -22,7 +23,10 @@ type OrderItem = { id?: string; serviceId: string; quantity: number; unitPrice: 
 type OrderEmployee = { employee: Employee };
 type Appointment = { id: string; orderId: string; branchId: string; employeeId?: string | null; employee?: { id: string; name: string } | null; date: string; startTime: string; endTime: string; status: string; notes?: string | null; cancellationReason?: string | null; cancelledAt?: string | null };
 type Branch = { id: string; name: string; city: string };
-type Order = { id: string; code: string; clientId: string; client?: Client; branch?: Branch; eventDate: string; startTime: string; endTime: string; location: string; addressZip?: string | null; addressStreet?: string | null; addressNumber?: string | null; addressNeighborhood?: string | null; addressCity?: string | null; addressState?: string | null; addressReference?: string | null; status: string; cancelledAt?: string | null; cancellationReason?: string | null; paymentMethod?: string | null; paymentMethodLegacy?: string | null; notes?: string; signatureName?: string; signatureDate?: string; totalAmount: string | number; items: OrderItem[]; employees: OrderEmployee[]; appointments: Appointment[] };
+// Same fields lib/pdf.ts selects for its own "Recorrencia" section - PDF and
+// print read the same shape from the same API response, never two rules.
+type RecurringSchedule = { id: string; frequency: "weekly" | "monthly"; interval: number; dayOfWeek?: number | null; dayOfMonth?: number | null; startDate: string; endDate?: string | null; active: boolean };
+type Order = { id: string; code: string; clientId: string; client?: Client; branch?: Branch; eventDate: string; startTime: string; endTime: string; location: string; addressZip?: string | null; addressStreet?: string | null; addressNumber?: string | null; addressNeighborhood?: string | null; addressCity?: string | null; addressState?: string | null; addressReference?: string | null; status: string; cancelledAt?: string | null; cancellationReason?: string | null; paymentMethod?: string | null; paymentMethodLegacy?: string | null; notes?: string; signatureName?: string; signatureDate?: string; totalAmount: string | number; items: OrderItem[]; employees: OrderEmployee[]; appointments: Appointment[]; recurringSchedules?: RecurringSchedule[] };
 type Transaction = { id: string; type: "receita" | "despesa"; category: string; description: string; amount: string | number; dueDate: string; paidAt?: string; status: "pago" | "pendente"; orderId?: string; paymentMethod?: string | null; isAutoRevenue?: boolean };
 type OccurrenceBucket = { count: number; total: number };
 type Dashboard = { revenue: number; expenses: number; profit: number; receivable: number; payable: number; clients: number; employees: number; services: number; orders: number; activeOrders: number; completedOrders: number; principalOrders: { count: number }; occurrences: { total: OccurrenceBucket; scheduled: OccurrenceBucket; finalized: OccurrenceBucket }; upcomingOrders: Order[] };
@@ -822,6 +826,14 @@ function SendOrderModal({ order, channel, onClose }: { order: Order; channel: Se
 function PrintOrder({ order, close }: { order: Order; close: () => void }) {
   const employeeNames = order.employees.map((e) => e.employee.name).join(", ") || "Equipe nao definida";
   const [sending, setSending] = useState<SendChannel | null>(null);
+  // Same source and shape as lib/pdf.ts's own "Recorrencia" section - see the
+  // shared helpers in lib/recurrence-label.ts.
+  const schedule = order.recurringSchedules?.[0];
+  const nonCancelledCount = order.appointments.filter((a) => !a.cancelledAt).length;
+  // Same rule the dashboard uses for occurrence totals (app/api/dashboard's
+  // loadOccurrences): each non-cancelled appointment inherits the OS total
+  // once - not a new financial rule, applied here for the recurrence total.
+  const recurrenceTotal = nonCancelledCount * Number(order.totalAmount);
   return <><Modal title={`OS ${order.code}`} onClose={close}><div className="print-page mx-auto max-w-4xl rounded-2xl border p-8">
     <div className="flex flex-wrap items-start justify-between gap-4 border-b pb-6">
       <div><h1 className="text-3xl font-black">LeeveLimpeza</h1><p className="text-sm text-slate-500">Ordem de Servico</p>{order.branch && <p className="mt-1 text-xs text-slate-400">{order.branch.name} - {order.branch.city}</p>}</div>
@@ -861,18 +873,33 @@ function PrintOrder({ order, close }: { order: Order; close: () => void }) {
         <tbody>{order.items.map((i) => <tr key={i.id}><td className="border-b p-2">{i.service?.name}</td><td className="border-b p-2">{i.quantity}x</td><td className="border-b p-2 text-right">{money(i.quantity * Number(i.unitPrice))}</td></tr>)}</tbody></table>
     </section>
 
-    {order.appointments.length > 0 && <section className="mt-6">
-      <h3 className="text-xs font-black uppercase text-slate-400">Atendimentos ({order.appointments.length})</h3>
-      <table className="report-table mt-2 w-full text-sm"><thead><tr><th className="border-b p-2 text-left">Data</th><th className="border-b p-2 text-left">Horario</th><th className="border-b p-2 text-left">Funcionario</th><th className="border-b p-2 text-left">Status</th></tr></thead>
-        <tbody>{order.appointments.map((a) => <tr key={a.id} className={a.cancelledAt ? "text-rose-500" : undefined}><td className="border-b p-2">{dateOnlyLabel(a.date)}</td><td className="border-b p-2">{a.startTime} - {a.endTime}</td><td className="border-b p-2">{a.employee?.name || employeeNames}</td><td className="border-b p-2 font-bold">{a.cancelledAt ? "CANCELADO" : statusLabels[a.status] || a.status}</td></tr>)}</tbody></table>
-    </section>}
-
     <section className="mt-6 grid gap-1 text-sm">
       <h3 className="text-xs font-black uppercase text-slate-400">Valores</h3>
       <p><b>Equipe:</b> {employeeNames}</p>
       <p><b>Forma de pagamento:</b> {paymentMethodLabel(order)}</p>
       <p className="mt-2 text-right text-xl font-black">Total: {money(order.totalAmount)}</p>
     </section>
+
+    {schedule && <section className="mt-6 break-inside-avoid">
+      <h3 className="text-xs font-black uppercase text-slate-400">Recorrencia</h3>
+      <div className="mt-2 grid gap-1 text-sm md:grid-cols-2">
+        <p><b>Tipo:</b> {recurrenceTypeLabel(schedule)}</p>
+        <p><b>Frequencia:</b> {recurrenceFrequencyLabel(schedule)}</p>
+        <p><b>Dia:</b> {recurrenceDayLabel(schedule)}</p>
+        <p><b>Periodo:</b> {recurrencePeriodLabel(schedule)}</p>
+        <p><b>Ocorrencias geradas:</b> {order.appointments.length}</p>
+        {!schedule.active && <p className="text-slate-400">(recorrencia encerrada/inativa)</p>}
+      </div>
+    </section>}
+
+    {order.appointments.length > 0 && <section className="mt-6">
+      <h3 className="text-xs font-black uppercase text-slate-400">{schedule ? `Atendimentos da recorrencia (${order.appointments.length})` : `Atendimentos (${order.appointments.length})`}</h3>
+      <table className="report-table mt-2 w-full text-sm">
+        <thead><tr><th className="border-b p-2 text-left">No</th><th className="border-b p-2 text-left">Data</th><th className="border-b p-2 text-left">Horario</th><th className="border-b p-2 text-left">Funcionario</th><th className="border-b p-2 text-left">Status</th><th className="border-b p-2 text-right">Valor</th></tr></thead>
+        <tbody>{order.appointments.map((a, index) => <tr key={a.id} className={a.cancelledAt ? "text-rose-500" : undefined}><td className="border-b p-2">{index + 1}</td><td className="border-b p-2">{dateOnlyLabel(a.date)}</td><td className="border-b p-2">{a.startTime} - {a.endTime}</td><td className="border-b p-2">{a.employee?.name || employeeNames}</td><td className="border-b p-2 font-bold">{a.cancelledAt ? "CANCELADO" : statusLabels[a.status] || a.status}</td><td className="border-b p-2 text-right">{money(order.totalAmount)}</td></tr>)}</tbody>
+      </table>
+      {schedule && <p className="mt-2 text-right text-sm"><b>{nonCancelledCount} atendimento(s) nao cancelado(s)</b> - valor por atendimento {money(order.totalAmount)} - <b>Total da recorrencia: {money(recurrenceTotal)}</b></p>}
+    </section>}
 
     {order.notes && <section className="mt-4"><h3 className="text-xs font-black uppercase text-slate-400">Observacoes</h3><p className="mt-2 min-h-16 rounded-xl bg-slate-50 p-4 text-sm">{order.notes}</p></section>}
 

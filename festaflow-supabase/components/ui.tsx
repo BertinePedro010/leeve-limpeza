@@ -59,8 +59,15 @@ export function Badge({ status, cancelledAt }: { status: string; cancelledAt?: s
   return <span className={`rounded-full px-2.5 py-1 text-[10px] font-black uppercase ${colors[key] || colors.agendado}`}>{statusLabels[key] || key.replace("_", " ")}</span>;
 }
 
+// `modal-overlay`/`modal-panel`/`modal-body` are print-CSS hooks only (see
+// the @media print block in app/globals.css) - on screen they carry no
+// styling of their own, Tailwind classes still do all the visual work.
+// Without those overrides, printing content that overflows this modal's
+// fixed max-height + overflow-y:auto scroll box (built for on-screen use)
+// clips it to whatever fit in the viewport instead of flowing across pages -
+// this is what cut off a recurring OS's full appointment list on print.
 export function Modal({ title, children, onClose }: { title: string; children: React.ReactNode; onClose: () => void }) {
-  return <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-sm"><div className="max-h-[92vh] w-full max-w-5xl overflow-hidden rounded-3xl bg-white shadow-2xl"><div className="flex items-center justify-between border-b px-6 py-4"><h3 className="font-black text-slate-900">{title}</h3><button onClick={onClose} className="rounded-xl px-3 py-2 text-sm font-black text-slate-500 hover:bg-slate-100">X</button></div><div className="max-h-[82vh] overflow-y-auto p-6">{children}</div></div></div>;
+  return <div className="modal-overlay fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-sm"><div className="modal-panel max-h-[92vh] w-full max-w-5xl overflow-hidden rounded-3xl bg-white shadow-2xl"><div className="no-print flex items-center justify-between border-b px-6 py-4"><h3 className="font-black text-slate-900">{title}</h3><button onClick={onClose} className="rounded-xl px-3 py-2 text-sm font-black text-slate-500 hover:bg-slate-100">X</button></div><div className="modal-body max-h-[82vh] overflow-y-auto p-6">{children}</div></div></div>;
 }
 
 export function Stat({ label, value, tone = "indigo" }: { label: string; value: string | number; tone?: string }) {

@@ -27,4 +27,32 @@ html, body { min-height: 100%; background: #f8fafc; }
   .signature-block {
     break-inside: avoid;
   }
+
+  /* Root cause of printed content getting cut off: every OS/recorrencia is
+     printed from inside the shared Modal (components/ui.tsx), whose
+     fixed-height overlay/panel/body (position:fixed, max-height, overflow)
+     exist purely for the on-screen scrollable dialog. Left as-is, the print
+     engine clips output to that scroll viewport instead of flowing it across
+     pages - the longer the content (e.g. a recurrence with many
+     atendimentos), the more gets cut. These overrides make the modal print
+     as plain, unclipped, unpositioned document flow. */
+  .modal-overlay {
+    position: static !important;
+    display: block !important;
+    background: none !important;
+    padding: 0 !important;
+    backdrop-filter: none !important;
+  }
+  .modal-panel {
+    max-height: none !important;
+    overflow: visible !important;
+    max-width: none !important;
+    width: auto !important;
+    box-shadow: none !important;
+    border-radius: 0 !important;
+  }
+  .modal-body {
+    max-height: none !important;
+    overflow: visible !important;
+  }
 }

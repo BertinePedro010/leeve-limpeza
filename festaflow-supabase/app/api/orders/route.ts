@@ -19,8 +19,12 @@ function total(items: Array<{ quantity: number; unitPrice: number }>) {
 // `attachments` intentionally dropped from this include - no frontend view
 // reads it (the Order type has no `attachments` field), so fetching it on
 // every order was pure payload weight with zero consumer.
+// `recurringSchedules` is the same shape lib/pdf.ts includes - the PDF and
+// this list (which PrintOrder reads for the on-screen/print view) must show
+// the same "Recorrencia" section from the same source, never two rules for
+// the same data (see recurring OS PDF/print fix).
 function include(canViewFinance: boolean) {
-  return { client: true, branch: { select: { id: true, name: true, city: true } }, items: { include: { service: true } }, employees: { include: { employee: true } }, transactions: canViewFinance, appointments: { include: { employee: { select: { id: true, name: true } } }, orderBy: [{ date: "asc" as const }, { startTime: "asc" as const }] } };
+  return { client: true, branch: { select: { id: true, name: true, city: true } }, items: { include: { service: true } }, employees: { include: { employee: true } }, transactions: canViewFinance, appointments: { include: { employee: { select: { id: true, name: true } } }, orderBy: [{ date: "asc" as const }, { startTime: "asc" as const }] }, recurringSchedules: { select: { id: true, frequency: true, interval: true, dayOfWeek: true, dayOfMonth: true, startDate: true, endDate: true, active: true } } };
 }
 
 // Returns the validated client so the caller can snapshot its address into
