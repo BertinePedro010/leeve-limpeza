@@ -1,18 +1,10 @@
 import { prisma } from "@/lib/prisma";
-import type { Prisma } from "@prisma/client";
 import { requireAuth, requireModule, resolveBranchIdForCreate, resolveBranchFilter, AuthzError, handleAuthzError } from "@/lib/authz";
 import { recurringScheduleSchema } from "@/lib/validators";
 import { formatOrderAddressLine, orderAddressSnapshot, evaluateClientAddress, clientAddressErrorMessage } from "@/lib/order-address";
 import { fail, ok, serialize } from "@/lib/json";
 import { generateAppointments } from "@/lib/recurrence";
-
-// Must be called with the transaction client - see the identical comment in
-// app/api/orders/route.ts (connection pool capped at 1, deadlocks otherwise).
-async function nextCode(client: Prisma.TransactionClient | typeof prisma, branchId: string) {
-  const year = new Date().getFullYear();
-  const count = await client.serviceOrder.count({ where: { branchId } });
-  return `OS-${year}-${String(count + 1).padStart(4, "0")}`;
-}
+import { nextOrderCode } from "@/lib/order-code";
 
 export async function GET(request: Request) {
   try {
@@ -66,7 +58,7 @@ export async function POST(request: Request) {
         data: {
           branchId,
           clientId: parsed.data.clientId,
-          code: await nextCode(tx, branchId),
+          code: await nextOrderCode(tx, branchId),
           eventDate: parsed.data.startDate,
           startTime: parsed.data.startTime,
           endTime: parsed.data.endTime,

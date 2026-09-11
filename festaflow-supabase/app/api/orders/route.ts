@@ -1,21 +1,10 @@
 import { prisma } from "@/lib/prisma";
-import type { Prisma } from "@prisma/client";
 import { requireAuth, requireModule, resolveBranchIdForCreate, resolveBranchFilter, AuthzError, handleAuthzError } from "@/lib/authz";
 import { orderSchema, orderValidationError } from "@/lib/validators";
 import { syncOrderBilling } from "@/lib/billing";
 import { formatOrderAddressLine, orderAddressSnapshot, evaluateClientAddress, clientAddressErrorMessage } from "@/lib/order-address";
 import { fail, ok, serialize } from "@/lib/json";
-
-// Must be called with the *transaction* client when running inside
-// prisma.$transaction - the connection pool here is capped at 1 connection,
-// so calling the outer `prisma` singleton from inside an open transaction
-// deadlocks (the transaction holds the only connection while waiting on a
-// query that itself needs a connection).
-async function nextCode(client: Prisma.TransactionClient | typeof prisma, branchId: string) {
-  const year = new Date().getFullYear();
-  const count = await client.serviceOrder.count({ where: { branchId } });
-  return `OS-${year}-${String(count + 1).padStart(4, "0")}`;
-}
+import { nextOrderCode } from "@/lib/order-code";
 
 function total(items: Array<{ quantity: number; unitPrice: number }>) {
   return items.reduce((sum, item) => sum + item.quantity * Number(item.unitPrice), 0);
@@ -128,7 +117,7 @@ export async function POST(request: Request) {
           location: formatOrderAddressLine(address),
           branchId,
           createdBy: auth.userId,
-          code: await nextCode(tx, branchId),
+          code: await nextOrderCode(tx, branchId),
           totalAmount: total(items),
           items: { create: items },
           employees: { create: employeeIds.map((employeeId) => ({ employeeId })) },
