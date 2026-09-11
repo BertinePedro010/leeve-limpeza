@@ -36,3 +36,17 @@ export function isDuplicateClient(
 
 export const DUPLICATE_CLIENT_MESSAGE =
   "Ja existe um cliente cadastrado com este CPF/CNPJ e este mesmo nome.";
+
+// Backs the client search box (single field, name OR document - see
+// app/api/clients GET). Name matches by normalized substring ("Pedro" finds
+// "Pedro da Silva"); document matches by digits-only substring so
+// "11.406.274/0001-00" and "11406274000100" find the same client regardless
+// of which way it (or the stored value) is punctuated - `document` is never
+// normalized at rest, only for this comparison.
+export function clientMatchesSearch(client: { name: string; document?: string | null }, search: string): boolean {
+  const term = search.trim();
+  if (!term) return true;
+  if (normalizeClientName(client.name).includes(normalizeClientName(term))) return true;
+  const digitsTerm = normalizeDocument(term);
+  return digitsTerm.length > 0 && normalizeDocument(client.document).includes(digitsTerm);
+}
