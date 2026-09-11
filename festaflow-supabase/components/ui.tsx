@@ -1,8 +1,14 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { displayStatusLabels, displayOrderStatus } from "@/lib/order-status";
 
-export const statusLabels: Record<string, string> = { pendente: "Agendado", confirmado: "Confirmado", em_andamento: "Em andamento", finalizado: "Realizado", cancelado: "Cancelado" };
+// OS/appointment status labels (agendado/realizado/cancelado-derived) plus
+// the financial "pendente"/"pago" labels Badge also renders (see PaymentStatus
+// in prisma/schema.prisma) - two independent concepts sharing one component,
+// never to be confused (see lib/order-status.ts for the OS-status source of
+// truth; "pendente" here means "payment not yet received", nothing else).
+export const statusLabels: Record<string, string> = { ...displayStatusLabels, pago: "Pago", pendente: "Pendente" };
 export const money = (n: number | string) => Number(n || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 export const dateOnly = (d?: string) => (d ? new Date(d).toISOString().slice(0, 10) : new Date().toISOString().slice(0, 10));
 // `Appointment.date` is a DB "date"-only column (no time/timezone) serialized
@@ -42,9 +48,15 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
   return data;
 }
 
-export function Badge({ status }: { status: string }) {
-  const colors: Record<string, string> = { pendente: "bg-blue-50 text-blue-700", confirmado: "bg-indigo-50 text-indigo-700", em_andamento: "bg-amber-50 text-amber-700", finalizado: "bg-emerald-50 text-emerald-700", cancelado: "bg-slate-100 text-slate-600", pago: "bg-emerald-50 text-emerald-700" };
-  return <span className={`rounded-full px-2.5 py-1 text-[10px] font-black uppercase ${colors[status] || colors.pendente}`}>{statusLabels[status] || status.replace("_", " ")}</span>;
+// `status` accepts either an OS/appointment status ("agendado"/"realizado")
+// or a payment status ("pago"/"pendente" - PaymentStatus, unrelated to OS
+// status, see lib/order-status.ts). `cancelledAt`, when passed, overrides the
+// OS status display with the derived "Cancelado" badge - never pass it for a
+// payment-status Badge (transactions have no cancelledAt).
+export function Badge({ status, cancelledAt }: { status: string; cancelledAt?: string | null }) {
+  const colors: Record<string, string> = { agendado: "bg-blue-50 text-blue-700", realizado: "bg-emerald-50 text-emerald-700", cancelado: "bg-slate-100 text-slate-600", pago: "bg-emerald-50 text-emerald-700", pendente: "bg-amber-50 text-amber-700" };
+  const key = cancelledAt !== undefined ? displayOrderStatus({ status, cancelledAt }) : status;
+  return <span className={`rounded-full px-2.5 py-1 text-[10px] font-black uppercase ${colors[key] || colors.agendado}`}>{statusLabels[key] || key.replace("_", " ")}</span>;
 }
 
 export function Modal({ title, children, onClose }: { title: string; children: React.ReactNode; onClose: () => void }) {

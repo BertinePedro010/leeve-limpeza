@@ -7,15 +7,16 @@
 // Business API's send-message endpoint with this same message text instead of
 // building a wa.me URL, without changing how the message is composed here.
 
+import { orderStatusLabel } from "@/lib/order-status";
+
 export type OrderForWhatsapp = {
   code: string;
   eventDate: Date;
   totalAmount: number | string;
   status: string;
+  cancelledAt?: Date | string | null;
   client: { name: string } | null;
 };
-
-const statusLabels: Record<string, string> = { pendente: "Agendado", confirmado: "Confirmado", em_andamento: "Em andamento", finalizado: "Realizado", cancelado: "Cancelado" };
 
 function money(value: number | string): string {
   return Number(value).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
@@ -39,7 +40,7 @@ export function normalizeWhatsappPhone(raw: string | null | undefined): string |
 export function buildOrderWhatsappMessage(order: OrderForWhatsapp): string {
   const clientName = order.client?.name ?? "cliente";
   const dateLabel = order.eventDate.toLocaleDateString("pt-BR", { timeZone: "UTC" });
-  const statusLabel = statusLabels[order.status] ?? order.status;
+  const statusLabel = orderStatusLabel(order);
   return [
     `Ola, ${clientName}!`,
     `Sua Ordem de Servico ${order.code} da LeeveLimpeza esta disponivel.`,

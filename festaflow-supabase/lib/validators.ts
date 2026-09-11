@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { ORDER_STATUS_VALUES } from "@/lib/order-status";
 
 const emptyToUndefined = (v: unknown) => (v === "" ? undefined : v);
 // Address is captured as structured fields (mirrors orderSchema). `address`
@@ -21,12 +22,16 @@ export const paymentMethodEnum = z.enum(["pix", "credit_card", "debit_card", "ca
 // selected client's cadastro (see lib/order-address.ts + app/api/orders) so
 // the client registration is the single source of truth. Any `address*` keys
 // sent in the payload are silently ignored by this schema.
-export const orderSchema = z.object({ branchId: z.string().uuid().optional(), clientId: z.string().uuid(), eventDate: z.coerce.date(), startTime: z.string().min(1), endTime: z.string().min(1), status: z.enum(["pendente", "confirmado", "em_andamento", "finalizado", "cancelado"]), paymentMethod: z.preprocess((v) => (v === "" ? undefined : v), paymentMethodEnum.optional().nullable()), notes: z.string().optional().nullable(), signatureName: z.string().optional().nullable(), signatureDate: z.coerce.date().optional().nullable(), employeeIds: z.array(z.string().uuid()).default([]), items: z.array(orderItemSchema).min(1), dates: z.array(z.coerce.date()).optional() });
+export const orderSchema = z.object({ branchId: z.string().uuid().optional(), clientId: z.string().uuid(), eventDate: z.coerce.date(), startTime: z.string().min(1), endTime: z.string().min(1), status: z.enum(ORDER_STATUS_VALUES), paymentMethod: z.preprocess((v) => (v === "" ? undefined : v), paymentMethodEnum.optional().nullable()), notes: z.string().optional().nullable(), signatureName: z.string().optional().nullable(), signatureDate: z.coerce.date().optional().nullable(), employeeIds: z.array(z.string().uuid()).default([]), items: z.array(orderItemSchema).min(1), dates: z.array(z.coerce.date()).optional() });
 
-export const appointmentStatusEnum = z.enum(["pendente", "confirmado", "em_andamento", "finalizado", "cancelado"]);
+export const appointmentStatusEnum = z.enum(ORDER_STATUS_VALUES);
 export const appointmentCreateSchema = z.object({ orderId: z.string().uuid(), employeeId: z.string().uuid().optional().nullable(), dates: z.array(z.coerce.date()).min(1), startTime: z.string().min(1), endTime: z.string().min(1), notes: z.string().optional().nullable() });
 export const appointmentUpdateSchema = z.object({ employeeId: z.string().uuid().optional().nullable(), date: z.coerce.date().optional(), startTime: z.string().min(1).optional(), endTime: z.string().min(1).optional(), status: appointmentStatusEnum.optional(), notes: z.string().optional().nullable() });
 export const appointmentCancelSchema = z.object({ reason: z.string().min(3) });
+// Cancels the WHOLE OS (app/api/orders/[id]/cancel) - same shape as
+// appointmentCancelSchema, kept separate so the two endpoints' payloads can
+// diverge later without one silently affecting the other.
+export const orderCancelSchema = z.object({ reason: z.string().min(3) });
 
 export const recurringScheduleSchema = z.object({
   branchId: z.string().uuid().optional(),

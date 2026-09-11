@@ -22,7 +22,7 @@ export async function POST(_request: Request, { params }: { params: Promise<{ id
     const appointment = await prisma.$transaction(async (tx) => {
       const updated = await tx.appointment.update({
         where: { id },
-        data: { status: "finalizado", completedAt: new Date() },
+        data: { status: "realizado", completedAt: new Date() },
         include: {
           order: {
             include: { client: true, items: { include: { service: true } } },
@@ -31,10 +31,10 @@ export async function POST(_request: Request, { params }: { params: Promise<{ id
       });
 
       const remainingOpen = await tx.appointment.count({
-        where: { orderId: updated.orderId, status: { notIn: ["finalizado", "cancelado"] } },
+        where: { orderId: updated.orderId, status: { not: "realizado" }, cancelledAt: null },
       });
       if (remainingOpen === 0) {
-        await tx.serviceOrder.update({ where: { id: updated.orderId }, data: { status: "finalizado" } });
+        await tx.serviceOrder.update({ where: { id: updated.orderId }, data: { status: "realizado" } });
       }
       await syncOrderBilling(tx, updated.orderId);
       return updated;

@@ -17,25 +17,30 @@ export async function GET(request: Request) {
       orderBy: { name: "asc" },
     });
 
-    const appointments = await prisma.appointment.groupBy({
-      by: ["employeeId", "status"],
+    // Cancellation is tracked via cancelledAt, not a status value (see
+    // lib/order-status.ts) - groupBy(status) alone can no longer tell a
+    // cancelled appointment apart from a merely-agendado one (both keep
+    // status="agendado"), so this reads the rows themselves and buckets them
+    // in JS instead. Bounded by employees.length x period, same as before.
+    const appointments = await prisma.appointment.findMany({
       where: { employeeId: { in: employees.map((e) => e.id) }, date: { gte: from, lte: to } },
-      _count: true,
+      select: { employeeId: true, status: true, cancelledAt: true },
     });
 
     const data = employees.map((employee) => {
       const rows = appointments.filter((a) => a.employeeId === employee.id);
-      const total = rows.reduce((sum, r) => sum + r._count, 0);
-      const byStatus = Object.fromEntries(rows.map((r) => [r.status, r._count]));
+      const cancelado = rows.filter((a) => a.cancelledAt !== null).length;
+      const realizado = rows.filter((a) => a.cancelledAt === null && a.status === "realizado").length;
+      const agendado = rows.length - cancelado - realizado;
       return {
         id: employee.id,
         name: employee.name,
         branch: employee.branch.name,
         role: employee.role,
-        totalAppointments: total,
-        realizado: byStatus.finalizado ?? 0,
-        cancelado: byStatus.cancelado ?? 0,
-        agendado: (byStatus.pendente ?? 0) + (byStatus.confirmado ?? 0) + (byStatus.em_andamento ?? 0),
+        totalAppointments: rows.length,
+        realizado,
+        cancelado,
+        agendado,
       };
     });
 

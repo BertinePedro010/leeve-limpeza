@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useBranch } from "@/lib/branch-context";
 import { api, money, Badge, Select, Input, Stat, paymentMethodLabels, paymentMethodOptions } from "@/components/ui";
 import type { Employee, Service } from "@/components/SaasApp";
+import { ORDER_STATUS_VALUES, orderStatusLabels } from "@/lib/order-status";
 
 type ReportType = "employees" | "employee" | "services" | "appointments" | "os" | "cancellations" | "clients";
 type Period = "hoje" | "ontem" | "semana" | "mes" | "mes_anterior" | "personalizado";
@@ -18,7 +19,7 @@ const reportTypes: Array<[ReportType, string]> = [
   ["clients", "Por Cliente"],
 ];
 const periods: Array<[Period, string]> = [["hoje", "Hoje"], ["ontem", "Ontem"], ["semana", "Esta semana"], ["mes", "Este mes"], ["mes_anterior", "Mes anterior"], ["personalizado", "Personalizado"]];
-const statuses = [["", "Todos"], ["pendente", "Agendado"], ["confirmado", "Confirmado"], ["em_andamento", "Em andamento"], ["finalizado", "Realizado"], ["cancelado", "Cancelado"]];
+const statuses = [["", "Todos"], ...ORDER_STATUS_VALUES.map((s) => [s, orderStatusLabels[s]])];
 
 function endpointFor(type: ReportType, employeeId: string): string {
   if (type === "employee") return `/api/reports/employees/${employeeId}`;
@@ -226,8 +227,8 @@ function ReportPrintView({ type, result, filters, close }: { type: ReportType; r
 
 // "Por Cliente" - shape returned by /api/reports/clients.
 type ClientServiceLine = { service: string; quantity: number; value: number };
-type ClientReportRow = { clientId: string; client: string; totalServices: number; totalValue: number; services: ClientServiceLine[] };
-type ClientsResult = { data?: ClientReportRow[]; totals?: { services: number; value: number } };
+type ClientReportRow = { clientId: string; client: string; totalOrders: number; agendado: number; realizado: number; totalServices: number; totalValue: number; services: ClientServiceLine[] };
+type ClientsResult = { data?: ClientReportRow[]; totals?: { services: number; value: number; orders?: number; agendado?: number; realizado?: number } };
 type ClientsPrintFilters = { periodLabel: string; branchLabel: string; clientLabel: string; employeeLabel: string; serviceLabel: string; status: string };
 
 function ClientsReport({ result }: { result: unknown }) {
@@ -244,6 +245,11 @@ function ClientsReport({ result }: { result: unknown }) {
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <h4 className="font-black">{c.client}</h4>
         <p className="text-sm font-bold text-slate-500">{c.totalServices} servico(s) &middot; {money(c.totalValue)}</p>
+      </div>
+      <div className="mt-2 flex flex-wrap gap-4 text-xs font-bold text-slate-500">
+        <span>Total de OS: <span className="text-slate-800">{c.totalOrders}</span></span>
+        <span>Agendado: <span className="text-blue-700">{c.agendado}</span></span>
+        <span>Realizado: <span className="text-emerald-700">{c.realizado}</span></span>
       </div>
       <table className="mt-3 w-full text-sm">
         <thead className="text-left text-xs uppercase text-slate-500"><tr><th className="py-1">Servico</th><th className="py-1">Quantidade</th><th className="py-1">Valor total</th></tr></thead>
@@ -268,6 +274,7 @@ function ClientsPrintView({ result, filters, close }: { result: unknown; filters
       {clients.length === 0 && <p className="mt-6 text-sm text-slate-500">Nenhum registro encontrado para os filtros selecionados.</p>}
       {clients.map((c) => <div key={c.clientId} className="mt-6 break-inside-avoid">
         <h2 className="text-lg font-black">CLIENTE: {c.client.toUpperCase()}</h2>
+        <p className="text-sm text-slate-600">Total de OS: {c.totalOrders} &middot; Agendado: {c.agendado} &middot; Realizado: {c.realizado}</p>
         <p className="text-sm text-slate-600">Total de servicos: {c.totalServices} &middot; Valor total: {money(c.totalValue)}</p>
         <table className="report-table mt-2 w-full text-sm">
           <thead><tr><th className="border-b p-2 text-left text-xs uppercase text-slate-500">Servico</th><th className="border-b p-2 text-left text-xs uppercase text-slate-500">Quantidade</th><th className="border-b p-2 text-left text-xs uppercase text-slate-500">Valor total</th></tr></thead>

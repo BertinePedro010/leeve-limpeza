@@ -43,26 +43,44 @@ export async function GET(request: Request) {
       if (!client) return fail("Cliente nao pertence a filial selecionada.", 422);
     }
 
-    const items = await prisma.serviceOrderItem.findMany({
-      where: {
-        service: { branchId: branchFilter, ...(serviceId ? { id: serviceId } : {}) },
-        order: {
-          deletedAt: null,
-          ...(clientId ? { clientId } : {}),
-          appointments: {
-            some: {
-              date: { gte: from, lte: to },
-              ...(employeeId ? { employeeId } : {}),
-              ...(status ? { status: status as never } : {}),
-            },
+    const itemsWhere = {
+      service: { branchId: branchFilter, ...(serviceId ? { id: serviceId } : {}) },
+      order: {
+        deletedAt: null,
+        ...(clientId ? { clientId } : {}),
+        appointments: {
+          some: {
+            date: { gte: from, lte: to },
+            // Cancelled appointments are tracked separately (cancelledAt)
+            // and never count toward a client's Agendado/Realizado summary -
+            // see lib/order-status.ts.
+            cancelledAt: null,
+            ...(employeeId ? { employeeId } : {}),
+            ...(status ? { status: status as never } : {}),
           },
         },
       },
-      include: {
-        service: { select: { name: true } },
-        order: { select: { clientId: true, client: { select: { name: true } } } },
-      },
-    });
+    };
+
+    // Two queries, same `itemsWhere` filter: one for the existing per-service
+    // breakdown, one for the OS-level Agendado/Realizado counts (an OS is
+    // counted once here regardless of its number of service lines or
+    // appointment dates - grouping by order.id, not by item). Neither
+    // recomputes the other's numbers.
+    const [items, orders] = await Promise.all([
+      prisma.serviceOrderItem.findMany({
+        where: itemsWhere,
+        include: {
+          service: { select: { name: true } },
+          order: { select: { clientId: true, client: { select: { name: true } } } },
+        },
+      }),
+      prisma.serviceOrder.findMany({
+        where: { ...itemsWhere.order, items: { some: { service: itemsWhere.service } } },
+        select: { id: true, clientId: true, status: true },
+        distinct: ["id"],
+      }),
+    ]);
 
     // client id -> { name, service name -> { quantity, value } }
     const byClient = new Map<
@@ -83,14 +101,28 @@ export async function GET(request: Request) {
       entry.services.set(item.service.name, line);
     }
 
+    // client id -> { totalOrders, agendado, realizado }
+    const statusByClient = new Map<string, { totalOrders: number; agendado: number; realizado: number }>();
+    for (const order of orders) {
+      const entry = statusByClient.get(order.clientId) ?? { totalOrders: 0, agendado: 0, realizado: 0 };
+      entry.totalOrders += 1;
+      if (order.status === "realizado") entry.realizado += 1;
+      else entry.agendado += 1;
+      statusByClient.set(order.clientId, entry);
+    }
+
     const data = [...byClient.values()]
       .map((entry) => {
         const services = [...entry.services.entries()]
           .map(([service, v]) => ({ service, quantity: v.quantity, value: v.value }))
           .sort((a, b) => b.value - a.value || a.service.localeCompare(b.service));
+        const statusCounts = statusByClient.get(entry.clientId) ?? { totalOrders: 0, agendado: 0, realizado: 0 };
         return {
           clientId: entry.clientId,
           client: entry.client,
+          totalOrders: statusCounts.totalOrders,
+          agendado: statusCounts.agendado,
+          realizado: statusCounts.realizado,
           totalServices: services.reduce((s, x) => s + x.quantity, 0),
           totalValue: services.reduce((s, x) => s + x.value, 0),
           services,
@@ -101,6 +133,9 @@ export async function GET(request: Request) {
     const totals = {
       services: data.reduce((s, c) => s + c.totalServices, 0),
       value: data.reduce((s, c) => s + c.totalValue, 0),
+      orders: data.reduce((s, c) => s + c.totalOrders, 0),
+      agendado: data.reduce((s, c) => s + c.agendado, 0),
+      realizado: data.reduce((s, c) => s + c.realizado, 0),
     };
 
     return ok(serialize({ period: { from, to }, data, totals }));

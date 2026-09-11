@@ -11,6 +11,7 @@
 import PDFDocument from "pdfkit";
 import type { Prisma } from "@prisma/client";
 import { hasStructuredOrderAddress } from "@/lib/order-address";
+import { orderStatusLabel } from "@/lib/order-status";
 
 const orderPdfInclude = {
   client: true,
@@ -23,7 +24,6 @@ const orderPdfInclude = {
 export type OrderForPdf = Prisma.ServiceOrderGetPayload<{ include: typeof orderPdfInclude }>;
 export { orderPdfInclude };
 
-const statusLabels: Record<string, string> = { pendente: "Agendado", confirmado: "Confirmado", em_andamento: "Em andamento", finalizado: "Realizado", cancelado: "Cancelado" };
 const paymentMethodLabels: Record<string, string> = { pix: "PIX", credit_card: "Cartao de credito", debit_card: "Cartao de debito", cash: "Dinheiro", boleto: "Boleto" };
 
 function money(value: Prisma.Decimal | number | string): string {
@@ -53,7 +53,7 @@ export function buildOrderPdf(order: OrderForPdf): Promise<Buffer> {
     doc.fillColor("#000");
     doc.moveUp(order.branch ? 3 : 2);
     doc.font("Helvetica-Bold").fontSize(12).text(order.code, { align: "right" });
-    doc.font("Helvetica").fontSize(9).fillColor("#555").text(`Status: ${statusLabels[order.status] ?? order.status}`, { align: "right" });
+    doc.font("Helvetica").fontSize(9).fillColor("#555").text(`Status: ${orderStatusLabel(order)}`, { align: "right" });
     doc.fillColor("#000");
     doc.moveDown(1.5);
     doc.moveTo(50, doc.y).lineTo(545, doc.y).strokeColor("#ddd").stroke();
@@ -89,7 +89,7 @@ export function buildOrderPdf(order: OrderForPdf): Promise<Buffer> {
       doc.font("Helvetica-Bold").fontSize(11).text(`Atendimentos (${order.appointments.length})`);
       doc.font("Helvetica").fontSize(10);
       for (const a of order.appointments) {
-        const statusTxt = statusLabels[a.status] ?? a.status;
+        const statusTxt = orderStatusLabel(a);
         const who = a.employee?.name ?? "Equipe da OS";
         doc.text(`- ${dateLabel(a.date)}  ${a.startTime}-${a.endTime}  ${who}  [${statusTxt}]`);
       }

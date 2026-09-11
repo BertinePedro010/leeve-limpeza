@@ -18,6 +18,10 @@ export async function GET(request: Request) {
       where: {
         branchId: branchFilter,
         date: { gte: from, lte: to },
+        // Cancelled appointments are tracked separately (cancelledAt) and
+        // are never part of "Todos"/Agendado/Realizado here - see
+        // lib/order-status.ts.
+        cancelledAt: null,
         ...(employeeId ? { employeeId } : {}),
         ...(status ? { status: status as never } : {}),
         ...(serviceId ? { order: { items: { some: { serviceId } } } } : {}),

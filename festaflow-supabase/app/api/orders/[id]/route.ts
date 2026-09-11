@@ -112,24 +112,18 @@ export async function PUT(request: Request, { params }: { params: Promise<{ id: 
           employees: { create: employeeIds.map((employeeId) => ({ employeeId })) },
         },
       });
-      // Cancelling the whole OS also cancels any of its appointments that
-      // are still open - individual appointments are never bulk-recreated
-      // here (that would wipe their own status/history), only cascade-cancelled.
-      // This must run BEFORE the final read below, otherwise the returned
-      // order.appointments would be a stale snapshot from before the cascade.
-      if (body.status === "cancelado") {
+      // OS status was deliberately changed in this edit - reflect it on the
+      // "principal" occurrence (the appointment on the OS event date), unless
+      // that occurrence is already realizado or was individually cancelled.
+      // Additional occurrences keep whatever status they were individually
+      // set to. Never a bulk rewrite of every appointment. Whole-OS
+      // cancellation is a separate action (app/api/orders/[id]/cancel) -
+      // "cancelado" is not a status value this PUT can ever receive.
+      // Must run BEFORE the final read below, otherwise the returned
+      // order.appointments would be a stale snapshot from before this update.
+      if (existing.status !== body.status) {
         await tx.appointment.updateMany({
-          where: { orderId: id, status: { notIn: ["finalizado", "cancelado"] } },
-          data: { status: "cancelado", cancelledAt: new Date(), cancelledBy: auth.userId, cancellationReason: "OS cancelada." },
-        });
-      } else if (existing.status !== body.status) {
-        // OS status was deliberately changed in this edit - reflect it on the
-        // "principal" occurrence (the appointment on the OS event date),
-        // unless that occurrence is already terminal. Additional occurrences
-        // keep whatever status they were individually set to. Never a bulk
-        // rewrite of every appointment.
-        await tx.appointment.updateMany({
-          where: { orderId: id, date: body.eventDate, status: { notIn: ["finalizado", "cancelado"] } },
+          where: { orderId: id, date: body.eventDate, status: { not: "realizado" }, cancelledAt: null },
           data: { status: body.status },
         });
       }

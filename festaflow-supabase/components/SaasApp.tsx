@@ -11,6 +11,7 @@ import ReportsView from "@/components/ReportsView";
 import BranchesView from "@/components/BranchesView";
 import UsersView from "@/components/UsersView";
 import { normalizeWhatsappPhone, buildOrderWhatsappMessage, buildWhatsappShareUrl } from "@/lib/whatsapp";
+import { ORDER_STATUS_VALUES, orderStatusLabels } from "@/lib/order-status";
 
 type Tab = "dashboard" | "clients" | "employees" | "services" | "orders" | "calendar" | "finance" | "reports" | "branches" | "users";
 export type Client = { id: string; name: string; email?: string; phone?: string; document?: string; address?: string; addressZip?: string | null; addressStreet?: string | null; addressNumber?: string | null; addressNeighborhood?: string | null; addressCity?: string | null; addressState?: string | null; addressReference?: string | null; notes?: string };
@@ -18,12 +19,12 @@ export type Employee = { id: string; name: string; role: string; phone?: string;
 export type Service = { id: string; name: string; description?: string; price: string | number; durationHours: string | number; category: string; active: boolean };
 type OrderItem = { id?: string; serviceId: string; quantity: number; unitPrice: string | number; service?: Service };
 type OrderEmployee = { employee: Employee };
-type Appointment = { id: string; orderId: string; branchId: string; employeeId?: string | null; employee?: { id: string; name: string } | null; date: string; startTime: string; endTime: string; status: string; notes?: string | null; cancellationReason?: string | null };
+type Appointment = { id: string; orderId: string; branchId: string; employeeId?: string | null; employee?: { id: string; name: string } | null; date: string; startTime: string; endTime: string; status: string; notes?: string | null; cancellationReason?: string | null; cancelledAt?: string | null };
 type Branch = { id: string; name: string; city: string };
-type Order = { id: string; code: string; clientId: string; client?: Client; branch?: Branch; eventDate: string; startTime: string; endTime: string; location: string; addressZip?: string | null; addressStreet?: string | null; addressNumber?: string | null; addressNeighborhood?: string | null; addressCity?: string | null; addressState?: string | null; addressReference?: string | null; status: string; paymentMethod?: string | null; paymentMethodLegacy?: string | null; notes?: string; signatureName?: string; signatureDate?: string; totalAmount: string | number; items: OrderItem[]; employees: OrderEmployee[]; appointments: Appointment[] };
+type Order = { id: string; code: string; clientId: string; client?: Client; branch?: Branch; eventDate: string; startTime: string; endTime: string; location: string; addressZip?: string | null; addressStreet?: string | null; addressNumber?: string | null; addressNeighborhood?: string | null; addressCity?: string | null; addressState?: string | null; addressReference?: string | null; status: string; cancelledAt?: string | null; cancellationReason?: string | null; paymentMethod?: string | null; paymentMethodLegacy?: string | null; notes?: string; signatureName?: string; signatureDate?: string; totalAmount: string | number; items: OrderItem[]; employees: OrderEmployee[]; appointments: Appointment[] };
 type Transaction = { id: string; type: "receita" | "despesa"; category: string; description: string; amount: string | number; dueDate: string; paidAt?: string; status: "pago" | "pendente"; orderId?: string; paymentMethod?: string | null; isAutoRevenue?: boolean };
 type OccurrenceBucket = { count: number; total: number };
-type Dashboard = { revenue: number; expenses: number; profit: number; receivable: number; payable: number; clients: number; employees: number; services: number; orders: number; activeOrders: number; completedOrders: number; principalOrders: { count: number }; occurrences: { total: OccurrenceBucket; scheduled: OccurrenceBucket; confirmed: OccurrenceBucket; finalized: OccurrenceBucket }; upcomingOrders: Order[] };
+type Dashboard = { revenue: number; expenses: number; profit: number; receivable: number; payable: number; clients: number; employees: number; services: number; orders: number; activeOrders: number; completedOrders: number; principalOrders: { count: number }; occurrences: { total: OccurrenceBucket; scheduled: OccurrenceBucket; finalized: OccurrenceBucket }; upcomingOrders: Order[] };
 type Me = { id: string; name: string; email: string; role: string; allowedModules: string[]; isGlobalAdmin: boolean };
 type SendChannel = "email" | "whatsapp";
 
@@ -184,18 +185,17 @@ const EMPTY_BUCKET: OccurrenceBucket = { count: 0, total: 0 };
 // (ocorrencias) - por isso a contagem aqui e por ocorrencia, nao por OS. A OS
 // principal continua num indicador proprio (quantidade de ServiceOrder).
 function OrderTotalsSection({ dashboard }: { dashboard: Dashboard }) {
-  const occ = dashboard.occurrences ?? { total: EMPTY_BUCKET, scheduled: EMPTY_BUCKET, confirmed: EMPTY_BUCKET, finalized: EMPTY_BUCKET };
+  const occ = dashboard.occurrences ?? { total: EMPTY_BUCKET, scheduled: EMPTY_BUCKET, finalized: EMPTY_BUCKET };
   return <div className="rounded-2xl border bg-white p-5 shadow-sm">
     <div className="flex flex-wrap items-baseline justify-between gap-2">
       <h3 className="font-black">Totais de ocorrencias da filial</h3>
       <p className="text-xs font-bold text-slate-500">OS principais: <span className="font-black text-slate-800">{dashboard.principalOrders?.count ?? 0}</span></p>
     </div>
     <p className="mt-1 text-xs text-slate-400">Cada data/atendimento (principal, adicional ou recorrencia) conta como 1 ocorrencia e herda o valor da OS. Canceladas e OS excluidas ficam de fora.</p>
-    <div className="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+    <div className="mt-4 grid gap-4 md:grid-cols-3">
       <OccurrenceCard label="Total de ocorrencias" bucket={occ.total} tone="slate" />
-      <OccurrenceCard label="Ocorrencias Agendadas" bucket={occ.scheduled} tone="blue" />
-      <OccurrenceCard label="Ocorrencias Confirmadas" bucket={occ.confirmed} tone="emerald" />
-      <OccurrenceCard label="Ocorrencias Realizadas" bucket={occ.finalized} tone="violet" />
+      <OccurrenceCard label="OS Agendadas" bucket={occ.scheduled} tone="blue" />
+      <OccurrenceCard label="OS Realizadas" bucket={occ.finalized} tone="emerald" />
     </div>
   </div>;
 }
@@ -335,7 +335,7 @@ function ServicesView({ data, branchId, reload, loading }: { data: Service[]; br
 // values come from ServiceOrder.totalAmount - same figure as the table's
 // "Valor" column.
 type ClientSearchSummary = { clientNames: string[]; totalOrders: number; totalValue: number; byStatus: Record<string, { count: number; value: number }> };
-const SUMMARY_STATUS_KEYS = ["pendente", "confirmado", "em_andamento", "finalizado", "cancelado"] as const;
+const SUMMARY_STATUS_KEYS = ORDER_STATUS_VALUES;
 
 function ClientSummaryPanel({ summary, term }: { summary: ClientSearchSummary; term: string }) {
   const heading = summary.clientNames.length === 1 ? summary.clientNames[0]
@@ -404,7 +404,7 @@ function OrdersView({ orders, clients, employees, services, branchId, reload, on
   async function removeOrder(id: string) { if (!confirm("Excluir OS?")) return; try { await api(`/api/orders/${id}`, { method: "DELETE" }); await reload(); } catch (err) { alert(err instanceof Error ? err.message : "Erro ao excluir OS."); } }
 
   if (loading) return <p className="text-sm text-slate-500">Carregando ordens de servico...</p>;
-  return <div className="space-y-5"><div className="flex flex-wrap justify-between gap-2"><p className="text-sm text-slate-500">OS com multiplos atendimentos, recorrencia, equipe, assinatura e impressao/PDF.</p><div className="flex gap-2"><button onClick={() => setRecurrenceOpen(true)} className="rounded-xl border border-indigo-300 px-4 py-2 font-black text-indigo-600">Nova Recorrencia</button><button onClick={() => { setEditing(null); setOpen(true); }} className="rounded-xl bg-indigo-600 px-4 py-2 font-black text-white">Nova OS</button></div></div><div className="flex flex-wrap items-center gap-2"><div className="relative flex-1 min-w-[220px]"><span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400">🔎</span><input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Pesquisar cliente..." aria-label="Pesquisar cliente" className="w-full rounded-xl border p-3 pl-9 text-sm" /></div>{search && <button onClick={() => setSearch("")} className="rounded-xl border px-4 py-2 text-sm font-black text-slate-600">Limpar</button>}{searchLoading && <span className="text-xs font-bold text-slate-400">Buscando...</span>}</div><div className="overflow-x-auto rounded-2xl border bg-white"><table className="w-full text-sm"><thead className="bg-slate-50 text-left text-xs uppercase text-slate-500"><tr><th className="p-4">Codigo</th><th className="p-4">Cliente</th><th className="hidden p-4 sm:table-cell">Data</th><th className="hidden p-4 sm:table-cell">Atendimentos</th><th className="hidden p-4 sm:table-cell">Pagamento</th><th className="p-4">Status</th><th className="p-4 text-right">Valor</th><th className="p-4 text-right">Acoes</th></tr></thead><tbody>{displayedOrders.map((o) => <tr key={o.id} className="border-t"><td className="p-4 font-mono font-black">{o.code}</td><td className="p-4">{o.client?.name}</td><td className="hidden p-4 sm:table-cell">{new Date(o.eventDate).toLocaleDateString("pt-BR")}</td><td className="hidden p-4 sm:table-cell">{o.appointments?.length ?? 0}</td><td className="hidden p-4 text-xs sm:table-cell">{paymentMethodLabel(o)}</td><td className="p-4"><Badge status={o.status} /></td><td className="p-4 text-right font-black text-indigo-600">{money(o.totalAmount)}</td><td className="p-4 text-right"><div className="flex flex-wrap items-center justify-end gap-x-3 gap-y-1">
+  return <div className="space-y-5"><div className="flex flex-wrap justify-between gap-2"><p className="text-sm text-slate-500">OS com multiplos atendimentos, recorrencia, equipe, assinatura e impressao/PDF.</p><div className="flex gap-2"><button onClick={() => setRecurrenceOpen(true)} className="rounded-xl border border-indigo-300 px-4 py-2 font-black text-indigo-600">Nova Recorrencia</button><button onClick={() => { setEditing(null); setOpen(true); }} className="rounded-xl bg-indigo-600 px-4 py-2 font-black text-white">Nova OS</button></div></div><div className="flex flex-wrap items-center gap-2"><div className="relative flex-1 min-w-[220px]"><span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400">🔎</span><input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Pesquisar cliente..." aria-label="Pesquisar cliente" className="w-full rounded-xl border p-3 pl-9 text-sm" /></div>{search && <button onClick={() => setSearch("")} className="rounded-xl border px-4 py-2 text-sm font-black text-slate-600">Limpar</button>}{searchLoading && <span className="text-xs font-bold text-slate-400">Buscando...</span>}</div><div className="overflow-x-auto rounded-2xl border bg-white"><table className="w-full text-sm"><thead className="bg-slate-50 text-left text-xs uppercase text-slate-500"><tr><th className="p-4">Codigo</th><th className="p-4">Cliente</th><th className="hidden p-4 sm:table-cell">Data</th><th className="hidden p-4 sm:table-cell">Atendimentos</th><th className="hidden p-4 sm:table-cell">Pagamento</th><th className="p-4">Status</th><th className="p-4 text-right">Valor</th><th className="p-4 text-right">Acoes</th></tr></thead><tbody>{displayedOrders.map((o) => <tr key={o.id} className="border-t"><td className="p-4 font-mono font-black">{o.code}</td><td className="p-4">{o.client?.name}</td><td className="hidden p-4 sm:table-cell">{new Date(o.eventDate).toLocaleDateString("pt-BR")}</td><td className="hidden p-4 sm:table-cell">{o.appointments?.length ?? 0}</td><td className="hidden p-4 text-xs sm:table-cell">{paymentMethodLabel(o)}</td><td className="p-4"><Badge status={o.status} cancelledAt={o.cancelledAt} /></td><td className="p-4 text-right font-black text-indigo-600">{money(o.totalAmount)}</td><td className="p-4 text-right"><div className="flex flex-wrap items-center justify-end gap-x-3 gap-y-1">
     <button onClick={() => setPrint(o)} className="font-bold">PDF</button>
     <button onClick={() => { setEditing(o); setOpen(true); }} className="font-bold text-indigo-600">Editar</button>
     <button onClick={() => setSending({ order: o, channel: "email" })} className="font-bold text-emerald-600">E-mail</button>
@@ -462,7 +462,7 @@ function OrderFormModal({ order, orders, clients, employees, services, branchId,
   // Address fields are intentionally absent from the form: the OS service
   // address is never typed here, it is carried from the selected client's
   // cadastro (see ClientServiceAddressPanel + app/api/orders).
-  const blank = { clientId: clients[0]?.id || "", eventDate: dateOnly(), startTime: "18:00", endTime: "23:59", status: "pendente", paymentMethod: "", notes: "", signatureName: "", employeeIds: [] as string[], items: [] as Array<{ serviceId: string; quantity: number; unitPrice: number }> };
+  const blank = { clientId: clients[0]?.id || "", eventDate: dateOnly(), startTime: "18:00", endTime: "23:59", status: "agendado", paymentMethod: "", notes: "", signatureName: "", employeeIds: [] as string[], items: [] as Array<{ serviceId: string; quantity: number; unitPrice: number }> };
   function fromOrder(o: Order) { return { clientId: o.clientId, eventDate: dateOnly(o.eventDate), startTime: o.startTime, endTime: o.endTime, status: o.status, paymentMethod: o.paymentMethod || "", notes: o.notes || "", signatureName: o.signatureName || "", employeeIds: o.employees.map((x) => x.employee.id), items: o.items.map((i) => ({ serviceId: i.serviceId, quantity: i.quantity, unitPrice: Number(i.unitPrice) })) }; }
 
   const [current, setCurrent] = useState<Order | null>(order);
@@ -568,6 +568,20 @@ function OrderFormModal({ order, orders, clients, employees, services, branchId,
     } catch (err) { alert(err instanceof Error ? err.message : "Erro ao adicionar atendimento."); }
   }
 
+  // Cancels the WHOLE OS (app/api/orders/[id]/cancel) - the replacement for
+  // the old "set status para Cancelado" option, now that cancellation is
+  // tracked via cancelledAt instead of a status value (see lib/order-status.ts).
+  async function cancelOrder() {
+    if (!current) return;
+    const reason = prompt("Motivo do cancelamento desta OS:");
+    if (!reason) return;
+    try {
+      const saved = await api<Order>(`/api/orders/${current.id}/cancel`, { method: "POST", body: JSON.stringify({ reason }) });
+      await onSaved(saved);
+      setCurrent(saved);
+    } catch (err) { alert(err instanceof Error ? err.message : "Erro ao cancelar OS."); }
+  }
+
   async function cancelAppointment(id: string) {
     const reason = prompt("Motivo do cancelamento deste atendimento:");
     if (!reason) return;
@@ -586,13 +600,12 @@ function OrderFormModal({ order, orders, clients, employees, services, branchId,
     try { await api(`/api/appointments/${id}`, { method: "PUT", body: JSON.stringify({ employeeId: employeeId || null }) }); await reload(); }
     catch (err) { alert(err instanceof Error ? err.message : "Erro ao atribuir funcionario."); }
   }
-  // One entry point for changing an occurrence's status. "cancelado" and
-  // "finalizado" route to their dedicated endpoints (reason prompt / billing
-  // sync); the reversible statuses go straight through the appointment PUT.
-  // Never touches the OS or sibling occurrences.
+  // One entry point for changing an occurrence's status. "realizado" routes
+  // to its dedicated endpoint (billing sync); cancelling is a separate
+  // action entirely (the "Cancelar atendimento" button, not this dropdown -
+  // see lib/order-status.ts). Never touches the OS or sibling occurrences.
   async function setAppointmentStatus(id: string, status: string) {
-    if (status === "cancelado") return cancelAppointment(id);
-    if (status === "finalizado") return completeAppointment(id);
+    if (status === "realizado") return completeAppointment(id);
     try { await api(`/api/appointments/${id}`, { method: "PUT", body: JSON.stringify({ status }) }); await reload(); }
     catch (err) { alert(err instanceof Error ? err.message : "Erro ao alterar o status do atendimento."); }
   }
@@ -602,7 +615,7 @@ function OrderFormModal({ order, orders, clients, employees, services, branchId,
     catch (err) { alert(err instanceof Error ? err.message : "Erro ao remover atendimento."); }
   }
 
-  return <Modal title={current ? `Editar OS ${current.code}` : "Nova OS"} onClose={onClose}><form onSubmit={submit} className="space-y-4">{success && <p role="status" className="rounded-xl bg-emerald-50 p-3 text-sm font-bold text-emerald-700">{success}</p>}{error && <p role="alert" className="rounded-xl bg-rose-50 p-3 text-sm font-bold text-rose-600">{error}</p>}<div className="grid gap-3 md:grid-cols-3"><Select id="os-field-clientId" error={errorField === "clientId" ? error : undefined} value={form.clientId} set={(v) => setForm({ ...form, clientId: v })} options={clients.map((c) => [c.id, c.name])} /><Input id="os-field-eventDate" error={errorField === "eventDate" ? error : undefined} type="date" label="Data" value={form.eventDate} set={(v) => setForm({ ...form, eventDate: v })} /><Select id="os-field-status" error={errorField === "status" ? error : undefined} value={form.status} set={(v) => setForm({ ...form, status: v })} options={[["pendente", "Pendente"], ["confirmado", "Confirmado"], ["em_andamento", "Em andamento"], ["finalizado", "Finalizado"], ["cancelado", "Cancelado"]]} /><Input id="os-field-startTime" error={errorField === "startTime" ? error : undefined} label="Inicio" value={form.startTime} set={(v) => setForm({ ...form, startTime: v })} /><Input id="os-field-endTime" error={errorField === "endTime" ? error : undefined} label="Fim" value={form.endTime} set={(v) => setForm({ ...form, endTime: v })} /><label className="grid gap-1 text-xs font-black uppercase text-slate-500">Pagamento<Select value={form.paymentMethod} set={(v) => setForm({ ...form, paymentMethod: v })} options={paymentMethodOptions} /></label></div>{current?.paymentMethodLegacy && !current.paymentMethod && <p className="text-xs text-slate-400">Valor legado registrado anteriormente: <b>{current.paymentMethodLegacy}</b> (selecione uma opcao acima para substituir por um valor controlado).</p>}<ClientServiceAddressPanel client={selectedClient} addressState={clientAddressState} historical={preservesOsAddress ? current : null} onEditClient={onEditClient} />{!current && <div className="rounded-2xl bg-slate-50 p-4"><h4 className="font-black">Datas adicionais (opcional)</h4><p className="text-xs text-slate-500">Cria um atendimento para a data principal acima e mais um para cada data selecionada aqui, todos na mesma OS. Selecione varias datas no calendario e confirme de uma vez.</p><div className="mt-3"><MultiDatePicker onConfirm={addDates} disabledDates={[form.eventDate, ...extraDates]} /></div>{extraDates.length > 0 && <div className="mt-3 flex flex-wrap gap-2">{extraDates.map((d) => <span key={d} className="flex items-center gap-2 rounded-full bg-indigo-50 px-3 py-1 text-xs font-bold text-indigo-700">{dateOnlyLabel(d)}<button type="button" onClick={() => removeDate(d)} className="text-rose-600">x</button></span>)}</div>}</div>}<div id="os-field-items" tabIndex={-1} className={`rounded-2xl bg-slate-50 p-4 ${errorField === "items" ? "ring-2 ring-rose-500" : ""}`}><h4 className="font-black">Servicos contratados</h4>{errorField === "items" && error && <p role="alert" className="mt-1 text-xs font-bold text-rose-600">{error}</p>}<div className="mt-3 flex flex-wrap gap-2"><select value={serviceId} onChange={(e) => setServiceId(e.target.value)} className="w-full rounded-xl border p-3">{services.map((s) => <option key={s.id} value={s.id}>{s.name} - {money(s.price)}</option>)}</select><button type="button" onClick={addService} className="rounded-xl bg-slate-950 px-4 font-black text-white">Adicionar</button></div>{form.items.map((i, idx) => <div key={idx} className="mt-2 flex flex-wrap items-center gap-2 rounded-xl bg-white p-3"><span className="min-w-0 flex-1 break-words">{services.find((s) => s.id === i.serviceId)?.name}</span><input type="number" min={1} value={i.quantity} onChange={(e) => setForm({ ...form, items: form.items.map((x, n) => n === idx ? { ...x, quantity: Number(e.target.value) } : x) })} className="w-16 shrink-0 rounded border p-2" /><b className="shrink-0">{money(i.quantity * Number(i.unitPrice))}</b><button type="button" onClick={() => setForm({ ...form, items: form.items.filter((_, n) => n !== idx) })} className="shrink-0 font-bold text-rose-600">Remover</button></div>)}<p className="mt-3 text-right text-lg font-black">Total: {money(total)}</p></div><EmployeeMultiSelect employees={employees} selected={form.employeeIds} onChange={(ids) => setForm({ ...form, employeeIds: ids })} /><Text label="Observacoes" value={form.notes} set={(v) => setForm({ ...form, notes: v })} /><Input label="Assinatura" value={form.signatureName} set={(v) => setForm({ ...form, signatureName: v })} />{current && <AppointmentsSection appointments={current.appointments} employees={employees} orderTotal={Number(current.totalAmount)} serviceLabel={current.items.map((i) => `${i.service?.name ?? "Servico"}${i.quantity > 1 ? ` x${i.quantity}` : ""}`).join(", ") || "-"} onCancel={cancelAppointment} onComplete={completeAppointment} onReschedule={rescheduleAppointment} onAssign={assignEmployee} onSetStatus={setAppointmentStatus} onRemove={removeAppointment} onAdd={addAppointments} />}<button disabled={saving || !addressReady} className="rounded-xl bg-indigo-600 p-3 font-black text-white disabled:opacity-60">{saving ? "Salvando..." : "Salvar"}</button></form></Modal>;
+  return <Modal title={current ? `Editar OS ${current.code}` : "Nova OS"} onClose={onClose}><form onSubmit={submit} className="space-y-4">{success && <p role="status" className="rounded-xl bg-emerald-50 p-3 text-sm font-bold text-emerald-700">{success}</p>}{error && <p role="alert" className="rounded-xl bg-rose-50 p-3 text-sm font-bold text-rose-600">{error}</p>}<div className="grid gap-3 md:grid-cols-3"><Select id="os-field-clientId" error={errorField === "clientId" ? error : undefined} value={form.clientId} set={(v) => setForm({ ...form, clientId: v })} options={clients.map((c) => [c.id, c.name])} /><Input id="os-field-eventDate" error={errorField === "eventDate" ? error : undefined} type="date" label="Data" value={form.eventDate} set={(v) => setForm({ ...form, eventDate: v })} /><Select id="os-field-status" error={errorField === "status" ? error : undefined} value={form.status} set={(v) => setForm({ ...form, status: v })} options={ORDER_STATUS_VALUES.map((s) => [s, orderStatusLabels[s]])} /><Input id="os-field-startTime" error={errorField === "startTime" ? error : undefined} label="Inicio" value={form.startTime} set={(v) => setForm({ ...form, startTime: v })} /><Input id="os-field-endTime" error={errorField === "endTime" ? error : undefined} label="Fim" value={form.endTime} set={(v) => setForm({ ...form, endTime: v })} /><label className="grid gap-1 text-xs font-black uppercase text-slate-500">Pagamento<Select value={form.paymentMethod} set={(v) => setForm({ ...form, paymentMethod: v })} options={paymentMethodOptions} /></label></div>{current?.paymentMethodLegacy && !current.paymentMethod && <p className="text-xs text-slate-400">Valor legado registrado anteriormente: <b>{current.paymentMethodLegacy}</b> (selecione uma opcao acima para substituir por um valor controlado).</p>}{current && (current.cancelledAt ? <p role="alert" className="rounded-xl bg-slate-100 p-3 text-sm font-bold text-slate-600">Esta OS foi cancelada{current.cancellationReason ? `: ${current.cancellationReason}` : "."}</p> : <button type="button" onClick={cancelOrder} className="text-xs font-bold text-rose-600 hover:underline">Cancelar OS</button>)}<ClientServiceAddressPanel client={selectedClient} addressState={clientAddressState} historical={preservesOsAddress ? current : null} onEditClient={onEditClient} />{!current && <div className="rounded-2xl bg-slate-50 p-4"><h4 className="font-black">Datas adicionais (opcional)</h4><p className="text-xs text-slate-500">Cria um atendimento para a data principal acima e mais um para cada data selecionada aqui, todos na mesma OS. Selecione varias datas no calendario e confirme de uma vez.</p><div className="mt-3"><MultiDatePicker onConfirm={addDates} disabledDates={[form.eventDate, ...extraDates]} /></div>{extraDates.length > 0 && <div className="mt-3 flex flex-wrap gap-2">{extraDates.map((d) => <span key={d} className="flex items-center gap-2 rounded-full bg-indigo-50 px-3 py-1 text-xs font-bold text-indigo-700">{dateOnlyLabel(d)}<button type="button" onClick={() => removeDate(d)} className="text-rose-600">x</button></span>)}</div>}</div>}<div id="os-field-items" tabIndex={-1} className={`rounded-2xl bg-slate-50 p-4 ${errorField === "items" ? "ring-2 ring-rose-500" : ""}`}><h4 className="font-black">Servicos contratados</h4>{errorField === "items" && error && <p role="alert" className="mt-1 text-xs font-bold text-rose-600">{error}</p>}<div className="mt-3 flex flex-wrap gap-2"><select value={serviceId} onChange={(e) => setServiceId(e.target.value)} className="w-full rounded-xl border p-3">{services.map((s) => <option key={s.id} value={s.id}>{s.name} - {money(s.price)}</option>)}</select><button type="button" onClick={addService} className="rounded-xl bg-slate-950 px-4 font-black text-white">Adicionar</button></div>{form.items.map((i, idx) => <div key={idx} className="mt-2 flex flex-wrap items-center gap-2 rounded-xl bg-white p-3"><span className="min-w-0 flex-1 break-words">{services.find((s) => s.id === i.serviceId)?.name}</span><input type="number" min={1} value={i.quantity} onChange={(e) => setForm({ ...form, items: form.items.map((x, n) => n === idx ? { ...x, quantity: Number(e.target.value) } : x) })} className="w-16 shrink-0 rounded border p-2" /><b className="shrink-0">{money(i.quantity * Number(i.unitPrice))}</b><button type="button" onClick={() => setForm({ ...form, items: form.items.filter((_, n) => n !== idx) })} className="shrink-0 font-bold text-rose-600">Remover</button></div>)}<p className="mt-3 text-right text-lg font-black">Total: {money(total)}</p></div><EmployeeMultiSelect employees={employees} selected={form.employeeIds} onChange={(ids) => setForm({ ...form, employeeIds: ids })} /><Text label="Observacoes" value={form.notes} set={(v) => setForm({ ...form, notes: v })} /><Input label="Assinatura" value={form.signatureName} set={(v) => setForm({ ...form, signatureName: v })} />{current && <AppointmentsSection appointments={current.appointments} employees={employees} orderTotal={Number(current.totalAmount)} serviceLabel={current.items.map((i) => `${i.service?.name ?? "Servico"}${i.quantity > 1 ? ` x${i.quantity}` : ""}`).join(", ") || "-"} onCancel={cancelAppointment} onComplete={completeAppointment} onReschedule={rescheduleAppointment} onAssign={assignEmployee} onSetStatus={setAppointmentStatus} onRemove={removeAppointment} onAdd={addAppointments} />}<button disabled={saving || !addressReady} className="rounded-xl bg-indigo-600 p-3 font-black text-white disabled:opacity-60">{saving ? "Salvando..." : "Salvar"}</button></form></Modal>;
 }
 
 // Each row = one occurrence (Appointment) of this single OS. Every occurrence
@@ -615,7 +628,7 @@ function AppointmentsSection({ appointments, employees, orderTotal, serviceLabel
   const [startTime, setStartTime] = useState("18:00");
   const [endTime, setEndTime] = useState("23:59");
   const existingDates = appointments.map((a) => dateOnly(a.date));
-  const activeCount = appointments.filter((a) => a.status !== "cancelado").length;
+  const activeCount = appointments.filter((a) => !a.cancelledAt).length;
   return <div className="rounded-2xl bg-slate-50 p-4">
     <div className="flex flex-wrap items-center justify-between gap-2"><div><h4 className="font-black">Atendimentos / Datas ({appointments.length})</h4><p className="text-xs text-slate-500">Servico: {serviceLabel} - Valor por ocorrencia: <b>{money(orderTotal)}</b></p></div><button type="button" onClick={() => setAdding((v) => !v)} className="text-xs font-bold text-indigo-600">{adding ? "Cancelar" : "+ Adicionar atendimentos"}</button></div>
     {adding && <div className="mt-3 space-y-3 rounded-xl border bg-white p-3">
@@ -626,20 +639,20 @@ function AppointmentsSection({ appointments, employees, orderTotal, serviceLabel
   </div>;
 }
 
-const APPOINTMENT_STATUS_OPTIONS: Array<[string, string]> = [["pendente", "Agendado"], ["confirmado", "Confirmado"], ["em_andamento", "Em andamento"], ["finalizado", "Realizado"], ["cancelado", "Cancelado"]];
+const APPOINTMENT_STATUS_OPTIONS: Array<[string, string]> = ORDER_STATUS_VALUES.map((s) => [s, orderStatusLabels[s]]);
 
 function AppointmentRow({ appointment, employees, occurrenceValue, serviceLabel, canRemove, onCancel, onComplete, onReschedule, onAssign, onSetStatus, onRemove }: { appointment: Appointment; employees: Employee[]; occurrenceValue: number; serviceLabel: string; canRemove: boolean; onCancel: (id: string) => void; onComplete: (id: string) => void; onReschedule: (id: string, date: string, startTime: string, endTime: string) => void; onAssign: (id: string, employeeId: string) => void; onSetStatus: (id: string, status: string) => void; onRemove: (id: string) => void }) {
   const [editingDate, setEditingDate] = useState(false);
   const [date, setDate] = useState(dateOnly(appointment.date));
   const [startTime, setStartTime] = useState(appointment.startTime);
   const [endTime, setEndTime] = useState(appointment.endTime);
-  const isFinal = appointment.status === "finalizado" || appointment.status === "cancelado";
+  const isFinal = appointment.status === "realizado" || !!appointment.cancelledAt;
   return <div className="rounded-xl border bg-white p-3">
     <div className="flex flex-wrap items-center justify-between gap-2">
       {editingDate
         ? <div className="flex flex-wrap items-center gap-2"><input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="rounded border p-2 text-sm" /><input value={startTime} onChange={(e) => setStartTime(e.target.value)} className="w-20 rounded border p-2 text-sm" /><input value={endTime} onChange={(e) => setEndTime(e.target.value)} className="w-20 rounded border p-2 text-sm" /><button type="button" onClick={() => { onReschedule(appointment.id, date, startTime, endTime); setEditingDate(false); }} className="text-sm font-bold text-indigo-600">Salvar</button><button type="button" onClick={() => setEditingDate(false)} className="text-sm font-bold text-slate-500">Cancelar edicao</button></div>
         : <button type="button" disabled={isFinal} onClick={() => setEditingDate(true)} className={`text-left text-sm font-bold ${isFinal ? "text-slate-400" : "text-slate-800 hover:text-indigo-600"}`}>{dateOnlyLabel(appointment.date)} - {appointment.startTime} as {appointment.endTime}{!isFinal && " (reagendar)"}</button>}
-      <Badge status={appointment.status} />
+      <Badge status={appointment.status} cancelledAt={appointment.cancelledAt} />
     </div>
     <p className="mt-1 text-xs text-slate-500">{serviceLabel} - <b className="text-slate-700">{money(occurrenceValue)}</b></p>
     <div className="mt-2 flex flex-wrap items-center gap-2">
@@ -648,7 +661,7 @@ function AppointmentRow({ appointment, employees, occurrenceValue, serviceLabel,
       {canRemove && !isFinal && <button type="button" onClick={() => onRemove(appointment.id)} className="text-xs font-bold text-slate-400 hover:text-rose-600">Remover</button>}
     </div>
     {!isFinal && <div className="mt-2 flex gap-3"><button type="button" onClick={() => onComplete(appointment.id)} className="text-xs font-bold text-emerald-600">Marcar realizado</button><button type="button" onClick={() => onCancel(appointment.id)} className="text-xs font-bold text-rose-600">Cancelar atendimento</button></div>}
-    {appointment.status === "cancelado" && appointment.cancellationReason && <p className="mt-2 text-xs text-rose-500">Motivo: {appointment.cancellationReason}</p>}
+    {appointment.cancelledAt && appointment.cancellationReason && <p className="mt-2 text-xs text-rose-500">Motivo: {appointment.cancellationReason}</p>}
   </div>;
 }
 
@@ -760,6 +773,7 @@ function SendOrderModal({ order, channel, onClose }: { order: Order; channel: Se
       eventDate: new Date(order.eventDate),
       totalAmount: order.totalAmount,
       status: order.status,
+      cancelledAt: order.cancelledAt,
       client: order.client ? { name: order.client.name } : null,
     });
     window.open(buildWhatsappShareUrl(normalized, text), "_blank", "noopener,noreferrer");
@@ -793,7 +807,7 @@ function PrintOrder({ order, close }: { order: Order; close: () => void }) {
   return <><Modal title={`OS ${order.code}`} onClose={close}><div className="print-page mx-auto max-w-4xl rounded-2xl border p-8">
     <div className="flex flex-wrap items-start justify-between gap-4 border-b pb-6">
       <div><h1 className="text-3xl font-black">LeeveLimpeza</h1><p className="text-sm text-slate-500">Ordem de Servico</p>{order.branch && <p className="mt-1 text-xs text-slate-400">{order.branch.name} - {order.branch.city}</p>}</div>
-      <div className="text-right"><p className="font-mono text-lg font-black">{order.code}</p><p className="text-xs text-slate-500">Emitido em {new Date().toLocaleDateString("pt-BR")}</p><div className="mt-2"><Badge status={order.status} /></div></div>
+      <div className="text-right"><p className="font-mono text-lg font-black">{order.code}</p><p className="text-xs text-slate-500">Emitido em {new Date().toLocaleDateString("pt-BR")}</p><div className="mt-2"><Badge status={order.status} cancelledAt={order.cancelledAt} /></div></div>
     </div>
 
     <section className="mt-6">
@@ -832,7 +846,7 @@ function PrintOrder({ order, close }: { order: Order; close: () => void }) {
     {order.appointments.length > 0 && <section className="mt-6">
       <h3 className="text-xs font-black uppercase text-slate-400">Atendimentos ({order.appointments.length})</h3>
       <table className="report-table mt-2 w-full text-sm"><thead><tr><th className="border-b p-2 text-left">Data</th><th className="border-b p-2 text-left">Horario</th><th className="border-b p-2 text-left">Funcionario</th><th className="border-b p-2 text-left">Status</th></tr></thead>
-        <tbody>{order.appointments.map((a) => <tr key={a.id} className={a.status === "cancelado" ? "text-rose-500" : undefined}><td className="border-b p-2">{dateOnlyLabel(a.date)}</td><td className="border-b p-2">{a.startTime} - {a.endTime}</td><td className="border-b p-2">{a.employee?.name || employeeNames}</td><td className="border-b p-2 font-bold">{statusLabels[a.status] || a.status}{a.status === "cancelado" ? " (CANCELADO)" : ""}</td></tr>)}</tbody></table>
+        <tbody>{order.appointments.map((a) => <tr key={a.id} className={a.cancelledAt ? "text-rose-500" : undefined}><td className="border-b p-2">{dateOnlyLabel(a.date)}</td><td className="border-b p-2">{a.startTime} - {a.endTime}</td><td className="border-b p-2">{a.employee?.name || employeeNames}</td><td className="border-b p-2 font-bold">{a.cancelledAt ? "CANCELADO" : statusLabels[a.status] || a.status}</td></tr>)}</tbody></table>
     </section>}
 
     <section className="mt-6 grid gap-1 text-sm">
@@ -858,7 +872,7 @@ function PrintOrder({ order, close }: { order: Order; close: () => void }) {
   </div></Modal>{sending && <SendOrderModal order={order} channel={sending} onClose={() => setSending(null)} />}</>;
 }
 
-type CalendarAppointment = { id: string; date: string; startTime: string; endTime: string; status: string; employee?: { name: string } | null; branch?: { name: string } | null; order: { id: string; code: string; client?: { name: string }; items: OrderItem[] } };
+type CalendarAppointment = { id: string; date: string; startTime: string; endTime: string; status: string; cancelledAt?: string | null; employee?: { name: string } | null; branch?: { name: string } | null; order: { id: string; code: string; client?: { name: string }; items: OrderItem[] } };
 
 // Clicking an atendimento in the day panel opens the same OS edit form used
 // by OrdersView (OrderFormModal), reusing `orders` already loaded by the
@@ -933,7 +947,7 @@ function CalendarView({ branchId, employees, clients, services, orders, reload, 
     <div className="flex justify-between rounded-2xl border bg-white p-5"><h3 className="text-lg font-black capitalize">{cursor.toLocaleDateString("pt-BR", { month: "long", year: "numeric" })}</h3><div className="flex gap-2"><button onClick={() => setCursor(new Date(y, m - 1, 1))} className="rounded-xl border px-4 py-2 font-bold">Anterior</button><button onClick={() => setCursor(new Date(y, m + 1, 1))} className="rounded-xl border px-4 py-2 font-bold">Proximo</button></div></div>
     <div className="grid gap-5 lg:grid-cols-3">
       <div className="overflow-hidden rounded-2xl border bg-white lg:col-span-2"><div className="overflow-x-auto"><div className="min-w-full sm:min-w-[640px]"><div className="grid grid-cols-7 bg-slate-50 text-center text-xs font-black uppercase text-slate-500">{["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sab"].map((x) => <div key={x} className="py-3">{x}</div>)}</div><div className="grid grid-cols-7 auto-rows-[70px] sm:auto-rows-[90px] lg:auto-rows-[110px]">{days.map((d, i) => <button type="button" key={i} disabled={!d} onClick={() => d && setSelectedDay(d)} className={`border-t border-r p-2 text-left ${d === selectedDay ? "bg-indigo-50" : ""}`}>{d && <><b className="text-xs">{d}</b><div className="mt-2 space-y-1">{byDay(d).slice(0, 3).map((a) => <div key={a.id} className="truncate rounded-lg bg-indigo-100 p-1 text-[10px] font-bold text-indigo-700">{a.startTime} {a.order.client?.name}</div>)}{byDay(d).length > 3 && <p className="text-[10px] font-bold text-slate-400">+{byDay(d).length - 3}</p>}</div></>}</button>)}</div></div></div></div>
-      <div className="rounded-2xl border bg-white p-5"><h4 className="font-black capitalize">Atendimentos - {selectedLabel}</h4>{selectedAppointments.length === 0 && <p className="mt-4 text-sm text-slate-500">Nenhum atendimento neste dia.</p>}<div className="mt-4 space-y-3">{selectedAppointments.map((a) => <button type="button" key={a.id} onClick={() => openAppointment(a)} className="w-full rounded-xl border p-3 text-left hover:border-indigo-300 hover:bg-indigo-50/40"><div className="flex items-center justify-between"><b className="text-sm">{a.startTime} - {a.endTime}</b><Badge status={a.status} /></div><p className="mt-1 text-sm font-bold text-slate-800">{a.order.client?.name}</p><p className="text-xs text-slate-500">{a.order.items[0]?.service?.name}{a.order.items.length > 1 ? ` +${a.order.items.length - 1}` : ""} - OS {a.order.code}</p><p className="text-xs text-slate-500">{a.employee?.name || "Equipe da OS"} - {a.branch?.name}</p></button>)}</div></div>
+      <div className="rounded-2xl border bg-white p-5"><h4 className="font-black capitalize">Atendimentos - {selectedLabel}</h4>{selectedAppointments.length === 0 && <p className="mt-4 text-sm text-slate-500">Nenhum atendimento neste dia.</p>}<div className="mt-4 space-y-3">{selectedAppointments.map((a) => <button type="button" key={a.id} onClick={() => openAppointment(a)} className="w-full rounded-xl border p-3 text-left hover:border-indigo-300 hover:bg-indigo-50/40"><div className="flex items-center justify-between"><b className="text-sm">{a.startTime} - {a.endTime}</b><Badge status={a.status} cancelledAt={a.cancelledAt} /></div><p className="mt-1 text-sm font-bold text-slate-800">{a.order.client?.name}</p><p className="text-xs text-slate-500">{a.order.items[0]?.service?.name}{a.order.items.length > 1 ? ` +${a.order.items.length - 1}` : ""} - OS {a.order.code}</p><p className="text-xs text-slate-500">{a.employee?.name || "Equipe da OS"} - {a.branch?.name}</p></button>)}</div></div>
     </div>
     {editingOrder && <OrderFormModal order={editingOrder} orders={orders} clients={clients} employees={employees} services={services} branchId={branchId} onClose={() => setEditingOrder(null)} reload={reloadCalendar} onSaved={handleOrderSaved} onEditClient={onEditClient} />}
   </div>;

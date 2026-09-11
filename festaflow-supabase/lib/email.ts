@@ -5,6 +5,7 @@
 // business transaction (e.g. marking an appointment as completed).
 
 import { hasStructuredOrderAddress } from "@/lib/order-address";
+import { orderStatusLabel } from "@/lib/order-status";
 
 export interface EmailAttachment {
   filename: string;
@@ -101,8 +102,6 @@ export async function sendAppointmentCompletedEmail(params: {
   return sendViaSmtp({ to: params.clientEmail, subject: `Atendimento concluido - OS ${params.orderCode}`, html });
 }
 
-const orderStatusLabels: Record<string, string> = { pendente: "Agendado", confirmado: "Confirmado", em_andamento: "Em andamento", finalizado: "Realizado", cancelado: "Cancelado" };
-
 function orderMoney(value: number | string): string {
   return Number(value).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 }
@@ -110,6 +109,7 @@ function orderMoney(value: number | string): string {
 export interface OrderEmailSummary {
   code: string;
   status: string;
+  cancelledAt?: Date | string | null;
   eventDate: Date;
   location: string;
   addressZip?: string | null;
@@ -123,7 +123,7 @@ export interface OrderEmailSummary {
   notes?: string | null;
   clientName: string;
   services: Array<{ name: string; quantity: number; unitPrice: number | string }>;
-  appointments: Array<{ date: Date; startTime: string; endTime: string; status: string }>;
+  appointments: Array<{ date: Date; startTime: string; endTime: string; status: string; cancelledAt?: Date | string | null }>;
   employeeNames: string[];
 }
 
@@ -149,7 +149,7 @@ export async function sendOrderEmail(params: {
         o.addressReference ? `Referencia: ${escapeHtml(o.addressReference)}` : "",
       ].filter(Boolean).join("<br/>")
     : escapeHtml(o.location);
-  const statusLabel = escapeHtml(orderStatusLabels[o.status] ?? o.status);
+  const statusLabel = escapeHtml(orderStatusLabel(o));
   const dateLabel = o.eventDate.toLocaleDateString("pt-BR", { timeZone: "UTC" });
   const employeeNames = o.employeeNames.length > 0 ? escapeHtml(o.employeeNames.join(", ")) : "Equipe nao definida";
 
@@ -158,7 +158,7 @@ export async function sendOrderEmail(params: {
     .join("");
 
   const appointmentsHtml = o.appointments
-    .map((a) => `<li>${a.date.toLocaleDateString("pt-BR", { timeZone: "UTC" })} ${a.startTime}-${a.endTime} - ${escapeHtml(orderStatusLabels[a.status] ?? a.status)}</li>`)
+    .map((a) => `<li>${a.date.toLocaleDateString("pt-BR", { timeZone: "UTC" })} ${a.startTime}-${a.endTime} - ${escapeHtml(orderStatusLabel(a))}</li>`)
     .join("");
 
   const messageHtml = params.message ? `<p>${escapeHtml(params.message).replace(/\n/g, "<br/>")}</p>` : "";

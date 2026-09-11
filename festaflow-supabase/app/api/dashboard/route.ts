@@ -4,8 +4,6 @@ import { prisma } from "@/lib/prisma";
 import { requireAuth, resolveBranchFilter, handleAuthzError } from "@/lib/authz";
 import { ok, serialize } from "@/lib/json";
 
-const INACTIVE_ORDER_STATUSES: OsStatus[] = ["finalizado", "cancelado"];
-
 type UpcomingOrder = { id: string; code: string; status: OsStatus; eventDate: Date; client: { name: string } | null };
 
 type OccurrenceBucket = { count: number; total: number };
@@ -18,17 +16,18 @@ type OccurrenceBucket = { count: number; total: number };
 // Uma unica query agrupada por status: cada appointment entra UMA vez e
 // contribui com o total_amount da sua OS uma vez (JOIN N:1 appointment->order,
 // sem fan-out). OS soft-deletada e excluida (o.deleted_at IS NULL). Escopo por
-// filial via a.branch_id (indice idx_appointments_branch_date). `cancelado`
-// nao entra em `total`. Nada e trazido linha-a-linha para o Node.
+// filial via a.branch_id (indice idx_appointments_branch_date). Um atendimento
+// cancelado (a.cancelled_at IS NOT NULL) nao entra em nenhum bucket - o status
+// (agendado/realizado) so e considerado quando NAO cancelado, exatamente como
+// o resumo "Por Cliente" e os demais relatorios (ver lib/order-status.ts).
 async function loadOccurrences(canView: boolean, branchIds: string[]): Promise<{
   total: OccurrenceBucket;
   scheduled: OccurrenceBucket;
-  confirmed: OccurrenceBucket;
   finalized: OccurrenceBucket;
 }> {
   const empty = { count: 0, total: 0 };
   if (!canView || branchIds.length === 0) {
-    return { total: empty, scheduled: empty, confirmed: empty, finalized: empty };
+    return { total: empty, scheduled: empty, finalized: empty };
   }
   const rows = await prisma.$queryRaw<Array<{ status: string; count: number; total: number }>>(Prisma.sql`
     SELECT a.status::text AS status,
@@ -37,23 +36,18 @@ async function loadOccurrences(canView: boolean, branchIds: string[]): Promise<{
     FROM appointments a
     JOIN service_orders o ON o.id = a.order_id
     WHERE o.deleted_at IS NULL
+      AND a.cancelled_at IS NULL
       AND a.branch_id = ANY(ARRAY[${Prisma.join(branchIds)}]::uuid[])
     GROUP BY a.status
   `);
   const byStatus = new Map(rows.map((r) => [r.status, { count: Number(r.count), total: Number(r.total) }]));
   const get = (s: string) => byStatus.get(s) ?? { count: 0, total: 0 };
-  const scheduled = get("pendente");
-  const confirmed = get("confirmado");
-  const finalized = get("finalizado");
-  const inProgress = get("em_andamento");
+  const scheduled = get("agendado");
+  const finalized = get("realizado");
   return {
     scheduled,
-    confirmed,
     finalized,
-    total: {
-      count: scheduled.count + confirmed.count + finalized.count + inProgress.count,
-      total: scheduled.total + confirmed.total + finalized.total + inProgress.total,
-    },
+    total: { count: scheduled.count + finalized.count, total: scheduled.total + finalized.total },
   };
 }
 
@@ -101,16 +95,15 @@ export async function GET(request: Request) {
     const canViewEmployees = isAdmin || auth.profile.allowedModules.includes("employees");
     const canViewServices = isAdmin || auth.profile.allowedModules.includes("services");
 
-    // OsStatus (prisma/schema.prisma + lib/validators.ts) has exactly 5
-    // values: pendente | confirmado | em_andamento | finalizado | cancelado.
-    // UI labels (components/ui.tsx statusLabels): pendente -> "Agendado",
-    // confirmado -> "Confirmado", finalizado -> "Realizado".
+    // OsStatus (prisma/schema.prisma + lib/validators.ts) has exactly 2
+    // values: agendado | realizado. Cancellation is a separate fact
+    // (cancelledAt), never a status value - see lib/order-status.ts.
     //
     // Two DIFFERENT things are reported:
     //  - principalOrders: quantas ServiceOrder existem (a "OS principal"),
-    //    status != cancelado, nao excluidas. Um COUNT de service_orders.
-    //  - occurrences.{scheduled,confirmed,finalized,total}: quantidade E valor
-    //    de OCORRENCIAS (linhas de appointments) por status - inclui data
+    //    nao canceladas, nao excluidas. Um COUNT de service_orders.
+    //  - occurrences.{scheduled,finalized,total}: quantidade E valor de
+    //    OCORRENCIAS (linhas de appointments) por status - inclui data
     //    principal, datas adicionais, atendimentos manuais e ocorrencias de
     //    recorrencia. Valor de cada ocorrencia = total_amount da OS pai.
     //    Ver loadOccurrences() acima (uma query agrupada, sem dupla contagem).
@@ -133,9 +126,9 @@ export async function GET(request: Request) {
       prisma.employee.count({ where: { deletedAt: null, ...branchFilter } }),
       prisma.service.count({ where: { deletedAt: null, ...branchFilter } }),
       canViewOrders ? prisma.serviceOrder.count({ where: orderWhere }) : Promise.resolve(0),
-      canViewOrders ? prisma.serviceOrder.count({ where: { ...orderWhere, status: { notIn: INACTIVE_ORDER_STATUSES } } }) : Promise.resolve(0),
-      canViewOrders ? prisma.serviceOrder.count({ where: { ...orderWhere, status: "finalizado" } }) : Promise.resolve(0),
-      canViewOrders ? prisma.serviceOrder.count({ where: { ...orderWhere, status: { not: "cancelado" } } }) : Promise.resolve(0),
+      canViewOrders ? prisma.serviceOrder.count({ where: { ...orderWhere, status: "agendado", cancelledAt: null } }) : Promise.resolve(0),
+      canViewOrders ? prisma.serviceOrder.count({ where: { ...orderWhere, status: "realizado", cancelledAt: null } }) : Promise.resolve(0),
+      canViewOrders ? prisma.serviceOrder.count({ where: { ...orderWhere, cancelledAt: null } }) : Promise.resolve(0),
       loadOccurrences(canViewOrders, branchIds),
       // `upcomingOrders` is trimmed to exactly what DashboardView renders
       // (id/code/status/eventDate/client name) - the full ServiceOrder +
@@ -145,7 +138,7 @@ export async function GET(request: Request) {
       // user regardless of those grants. Explicitly ordered by eventDate
       // ascending (the prior all-rows-then-slice(0,5) had no ORDER BY, so
       // which 5 rows came back was not deterministic either).
-      loadUpcomingOrders(canViewOrders, { ...orderWhere, status: { notIn: INACTIVE_ORDER_STATUSES } }),
+      loadUpcomingOrders(canViewOrders, { ...orderWhere, status: "agendado", cancelledAt: null }),
       canViewFinance ? prisma.transaction.aggregate({ where: { ...transactionWhere, type: "receita", status: "pago" }, _sum: { amount: true } }) : Promise.resolve(null),
       canViewFinance ? prisma.transaction.aggregate({ where: { ...transactionWhere, type: "despesa", status: "pago" }, _sum: { amount: true } }) : Promise.resolve(null),
       canViewFinance ? prisma.transaction.aggregate({ where: { ...transactionWhere, type: "receita", status: "pendente" }, _sum: { amount: true } }) : Promise.resolve(null),

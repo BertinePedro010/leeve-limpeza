@@ -31,7 +31,10 @@ export async function syncOrderBilling(
   const order = options?.order ?? await tx.serviceOrder.findUniqueOrThrow({ where: { id: orderId } });
   const existing = options?.skipExistingLookup ? null : await tx.transaction.findFirst({ where: { orderId, isAutoRevenue: true } });
 
-  if (order.status === "finalizado") {
+  // A cancelled OS never bills, even if it was already "realizado" before
+  // being cancelled (see app/api/orders/[id]/cancel) - cancelledAt overrides
+  // status for billing purposes, same as everywhere else status is read.
+  if (order.status === "realizado" && !order.cancelledAt) {
     const data = {
       type: "receita" as const,
       category: "Servicos",

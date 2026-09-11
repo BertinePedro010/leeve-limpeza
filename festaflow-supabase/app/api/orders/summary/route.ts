@@ -2,6 +2,7 @@ import { prisma } from "@/lib/prisma";
 import type { Prisma } from "@prisma/client";
 import { requireAuth, requireModule, resolveBranchFilter, handleAuthzError } from "@/lib/authz";
 import { ok, serialize } from "@/lib/json";
+import { ORDER_STATUS_VALUES } from "@/lib/order-status";
 
 // Client search summary for the Ordens de Servico screen. Same module
 // ("orders"), same branch isolation (resolveBranchFilter validates the
@@ -11,7 +12,7 @@ import { ok, serialize } from "@/lib/json";
 // counts as exactly one OS. Value uses ServiceOrder.totalAmount, the same
 // figure the listing table shows in its "Valor" column - no new financial
 // rule. Returns zeros (not an error) when the search term is empty.
-const STATUSES = ["pendente", "confirmado", "em_andamento", "finalizado", "cancelado"] as const;
+const STATUSES = ORDER_STATUS_VALUES;
 
 export async function GET(request: Request) {
   try {
@@ -31,6 +32,10 @@ export async function GET(request: Request) {
 
     const where: Prisma.ServiceOrderWhereInput = {
       deletedAt: null,
+      // Cancelled OS are tracked separately (cancelledAt) and must never be
+      // counted into the agendado/realizado breakdown here - same rule as
+      // the Dashboard's occurrence totals (see app/api/dashboard).
+      cancelledAt: null,
       branchId: resolveBranchFilter(auth, branchId),
       client: { name: { contains: clientSearch, mode: "insensitive" } },
     };

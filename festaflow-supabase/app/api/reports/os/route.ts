@@ -20,6 +20,10 @@ export async function GET(request: Request) {
       prisma.serviceOrder.findMany({
         where: {
           deletedAt: null,
+          // Cancelled OS are tracked separately (cancelledAt) and are never
+          // part of "Todos"/Agendado/Realizado here - same rule as the
+          // Dashboard and every other status breakdown (lib/order-status.ts).
+          cancelledAt: null,
           branchId: branchFilter,
           createdAt: { gte: from, lte: to },
           ...(status ? { status: status as never } : {}),

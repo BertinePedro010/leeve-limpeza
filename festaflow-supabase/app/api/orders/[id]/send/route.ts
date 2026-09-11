@@ -53,6 +53,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
         order: {
           code: order.code,
           status: order.status,
+          cancelledAt: order.cancelledAt,
           eventDate: order.eventDate,
           location: order.location,
           addressZip: order.addressZip,
@@ -66,7 +67,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
           notes: order.notes,
           clientName: order.client?.name ?? "Cliente",
           services: order.items.map((i) => ({ name: i.service.name, quantity: i.quantity, unitPrice: i.unitPrice.toString() })),
-          appointments: order.appointments.map((a) => ({ date: a.date, startTime: a.startTime, endTime: a.endTime, status: a.status })),
+          appointments: order.appointments.map((a) => ({ date: a.date, startTime: a.startTime, endTime: a.endTime, status: a.status, cancelledAt: a.cancelledAt })),
           employeeNames: order.employees.map((e) => e.employee.name),
         },
       });

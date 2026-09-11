@@ -72,7 +72,7 @@ export async function POST(request: Request) {
           endTime: parsed.data.endTime,
           ...address,
           location: formatOrderAddressLine(address),
-          status: "confirmado",
+          status: "agendado",
           totalAmount: parsed.data.price,
           createdBy: auth.userId,
           items: { create: [{ serviceId: parsed.data.serviceId, quantity: 1, unitPrice: parsed.data.price }] },

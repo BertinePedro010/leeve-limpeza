@@ -15,10 +15,12 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     const parsed = appointmentCancelSchema.safeParse(await request.json());
     if (!parsed.success) return fail("Informe o motivo do cancelamento.", 422);
 
+    // `status` is intentionally left untouched - "cancelado" is not a valid
+    // status value (see lib/order-status.ts). cancelledAt is what marks this
+    // appointment cancelled everywhere it's read.
     const data = await prisma.appointment.update({
       where: { id },
       data: {
-        status: "cancelado",
         cancellationReason: parsed.data.reason,
         cancelledAt: new Date(),
         cancelledBy: auth.userId,

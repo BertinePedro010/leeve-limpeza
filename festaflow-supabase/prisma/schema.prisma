@@ -14,12 +14,13 @@ enum UserRole {
   funcionario
 }
 
+// Only 2 operational values. Cancellation is NOT a status value - it is
+// tracked via cancelledAt/cancelledBy/cancellationReason on ServiceOrder and
+// Appointment (see lib/order-status.ts for the shared display logic that
+// turns "status + cancelledAt" into the "Cancelado" label the UI shows).
 enum OsStatus {
-  pendente
-  confirmado
-  em_andamento
-  finalizado
-  cancelado
+  agendado
+  realizado
 }
 
 enum TransactionType {
@@ -223,7 +224,15 @@ model ServiceOrder {
   addressCity        String?             @map("address_city") @db.VarChar(120)
   addressState       String?             @map("address_state") @db.VarChar(2)
   addressReference   String?             @map("address_reference") @db.VarChar(200)
-  status             OsStatus            @default(pendente)
+  status             OsStatus            @default(agendado)
+  // Cancellation is tracked here, separate from `status` (mirrors the same
+  // 3 columns already on Appointment) - a cancelled OS keeps whatever
+  // agendado/realizado status it last had; cancelledAt is what marks it
+  // cancelled (see lib/order-status.ts). Set by the dedicated cancel action
+  // (app/api/orders/[id]/cancel), never by the general edit PUT.
+  cancelledAt        DateTime?           @map("cancelled_at") @db.Timestamptz(6)
+  cancelledBy        String?             @map("cancelled_by") @db.Uuid
+  cancellationReason String?             @map("cancellation_reason") @db.Text
   // Free-text field kept exactly as-is for legacy records (e.g. "Pix 50/50",
   // "Faturamento 30 dias") that a controlled enum cannot represent losslessly.
   // New/edited orders always write `paymentMethod` (the enum) instead; this
@@ -352,7 +361,7 @@ model Appointment {
   date                DateTime  @map("date") @db.Date
   startTime           String    @map("start_time") @db.VarChar(10)
   endTime             String    @map("end_time") @db.VarChar(10)
-  status              OsStatus  @default(pendente)
+  status              OsStatus  @default(agendado)
   notes               String?   @db.Text
   cancellationReason  String?   @map("cancellation_reason") @db.Text
   cancelledAt         DateTime? @map("cancelled_at") @db.Timestamptz(6)

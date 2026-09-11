@@ -29,11 +29,13 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
     const distinctOrders = new Map(appointments.map((a) => [a.order.id, a.order.totalAmount]));
     const totalValue = [...distinctOrders.values()].reduce((sum, v) => sum + Number(v), 0);
 
+    // Cancellation is tracked via cancelledAt, not a status value - see
+    // lib/order-status.ts.
     const summary = {
       total: appointments.length,
-      realizado: appointments.filter((a) => a.status === "finalizado").length,
-      cancelado: appointments.filter((a) => a.status === "cancelado").length,
-      agendado: appointments.filter((a) => !["finalizado", "cancelado"].includes(a.status)).length,
+      realizado: appointments.filter((a) => a.cancelledAt === null && a.status === "realizado").length,
+      cancelado: appointments.filter((a) => a.cancelledAt !== null).length,
+      agendado: appointments.filter((a) => a.cancelledAt === null && a.status === "agendado").length,
       totalValue,
       orderCount: distinctOrders.size,
     };

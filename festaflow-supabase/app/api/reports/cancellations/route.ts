@@ -11,10 +11,13 @@ export async function GET(request: Request) {
     const branchFilter = await resolveReportBranchFilter(auth, url.searchParams.get("branchId"));
     const { from, to } = resolvePeriod(url);
 
+    // Cancellation is tracked via cancelledAt, not a status value (see
+    // lib/order-status.ts) - a NULL cancelledAt never matches this range
+    // comparison, so this already implicitly excludes non-cancelled rows.
     const cancelled = await prisma.appointment.findMany({
-      where: { branchId: branchFilter, status: "cancelado", cancelledAt: { gte: from, lte: to } },
+      where: { branchId: branchFilter, cancelledAt: { gte: from, lte: to } },
       include: {
-        order: { select: { code: true, status: true, client: { select: { name: true } } } },
+        order: { select: { code: true, cancelledAt: true, client: { select: { name: true } } } },
         employee: { select: { name: true } },
         branch: { select: { name: true } },
       },
@@ -32,7 +35,7 @@ export async function GET(request: Request) {
       appointmentDate: a.date,
       cancelledAt: a.cancelledAt,
       reason: a.cancellationReason,
-      type: a.order.status === "cancelado" && a.cancellationReason === "OS cancelada." ? "os_inteira" : "atendimento_individual",
+      type: a.order.cancelledAt !== null && a.cancellationReason === "OS cancelada." ? "os_inteira" : "atendimento_individual",
     }));
 
     return ok(serialize({ period: { from, to }, data }));
