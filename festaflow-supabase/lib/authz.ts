@@ -1,6 +1,6 @@
 import type { UserRole } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { getCurrentUser } from "@/lib/auth";
+import { getCurrentUser, AuthServiceUnavailableError } from "@/lib/auth";
 import { fail } from "@/lib/json";
 
 // Authorization is data-driven from `user_branches`, never inferred from `role`.
@@ -36,7 +36,19 @@ export interface AuthContext {
 // expired session. Fix: never redirect from API code - return a clean 401
 // JSON error instead, so `api()` throws a real, catchable ApiError.
 export async function requireAuth(): Promise<AuthContext> {
-  const user = await getCurrentUser();
+  let user: Awaited<ReturnType<typeof getCurrentUser>>;
+  try {
+    user = await getCurrentUser();
+  } catch (error) {
+    if (error instanceof AuthServiceUnavailableError) {
+      // Never log the underlying Supabase error object as-is (it can carry
+      // request/response internals) - only status/type/message, no
+      // token/cookie/secret ever passes through this line.
+      console.error("[auth] Supabase Auth unavailable while validating session:", { status: 503, endpoint: "auth.getUser", errorType: error.name, message: error.message });
+      throw new AuthzError("Nao foi possivel validar sua sessao agora. Tente novamente.", 503);
+    }
+    throw error;
+  }
   if (!user) {
     throw new AuthzError("Sessao expirada ou invalida. Faca login novamente.", 401);
   }

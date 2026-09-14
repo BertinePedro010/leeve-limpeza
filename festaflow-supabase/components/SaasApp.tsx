@@ -432,7 +432,7 @@ function OrdersView({ orders, clients, employees, services, branchId, reload, on
     <button onClick={() => setSending({ order: o, channel: "email" })} className="font-bold text-emerald-600">E-mail</button>
     <button onClick={() => setSending({ order: o, channel: "whatsapp" })} className="font-bold text-emerald-600">WhatsApp</button>
     <button onClick={() => removeOrder(o.id)} className="font-bold text-rose-600">Excluir</button>
-  </div></td></tr>)}</tbody></table></div>{isSearching && !searchLoading && displayedOrders.length === 0 && <div className="rounded-2xl border bg-white p-6 text-sm text-slate-500">Nenhuma Ordem de Servico encontrada para este cliente.</div>}{isSearching && summary && summary.totalOrders > 0 && <ClientSummaryPanel summary={summary} term={debounced} />}{open && <OrderFormModal order={editing} orders={orders} clients={clients} employees={employees} services={services} branchId={branchId} onClose={() => setOpen(false)} reload={reload} onSaved={onOrderSaved} onEditClient={onEditClient} />}{print && <PrintOrder order={print} close={() => setPrint(null)} />}{recurrenceOpen && <RecurrenceModal clients={clients} services={services} employees={employees} branchId={branchId} close={() => setRecurrenceOpen(false)} onCreated={reload} onEditClient={onEditClient} />}{sending && <SendOrderModal order={sending.order} channel={sending.channel} onClose={() => setSending(null)} />}</div>;
+  </div></td></tr>)}</tbody></table></div>{isSearching && !searchLoading && displayedOrders.length === 0 && <div className="rounded-2xl border bg-white p-6 text-sm text-slate-500">Nenhuma Ordem de Servico encontrada para este cliente.</div>}{isSearching && summary && summary.totalOrders > 0 && <ClientSummaryPanel summary={summary} term={debounced} />}{open && <OrderFormModal order={editing} orders={orders} clients={clients} employees={employees} services={services} branchId={branchId} onClose={() => setOpen(false)} reload={reload} onSaved={onOrderSaved} onEditClient={onEditClient} />}{print && <PrintOrder order={print} close={() => setPrint(null)} />}{recurrenceOpen && <RecurrenceModal clients={clients} services={services} employees={employees} branchId={branchId} close={() => setRecurrenceOpen(false)} onOrderCreated={onOrderSaved} reload={reload} onEditClient={onEditClient} />}{sending && <SendOrderModal order={sending.order} channel={sending.channel} onClose={() => setSending(null)} />}</div>;
 }
 
 type ShownAddress = { addressStreet?: string | null; addressNumber?: string | null; addressNeighborhood?: string | null; addressCity?: string | null; addressState?: string | null; addressZip?: string | null; addressReference?: string | null; location?: string | null };
@@ -687,7 +687,12 @@ function AppointmentRow({ appointment, employees, occurrenceValue, serviceLabel,
   </div>;
 }
 
-function RecurrenceModal({ clients, services, employees, branchId, close, onCreated, onEditClient }: { clients: Client[]; services: Service[]; employees: Employee[]; branchId: string | null; close: () => void; onCreated: () => Promise<void>; onEditClient?: (clientId: string) => void }) {
+// onOrderCreated/reload split mirrors OrdersView's own onOrderSaved/reload:
+// the happy path applies just the created order via the same targeted-update
+// function OS saves already use (never clients/employees/services, which a
+// recurrence creation never touches); reload (the full loadAll()) is only a
+// fallback if the follow-up GET of the created order itself fails.
+function RecurrenceModal({ clients, services, employees, branchId, close, onOrderCreated, reload, onEditClient }: { clients: Client[]; services: Service[]; employees: Employee[]; branchId: string | null; close: () => void; onOrderCreated: (order: Order) => Promise<void>; reload: () => Promise<void>; onEditClient?: (clientId: string) => void }) {
   const [form, setForm] = useState({ clientId: clients[0]?.id || "", serviceId: services[0]?.id || "", frequency: "monthly", interval: 1, daysOfWeek: [1] as number[], dayOfMonth: 10, startTime: "09:00", endTime: "11:00", price: 0, startDate: dateOnly(), endDate: "", employeeIds: [] as string[] });
   const [extraDates, setExtraDates] = useState<string[]>([]);
   const [error, setError] = useState("");
@@ -725,7 +730,19 @@ function RecurrenceModal({ clients, services, employees, branchId, close, onCrea
       if (extraDates.length > 0) {
         await api("/api/appointments", { method: "POST", body: JSON.stringify({ orderId: created.order.id, dates: extraDates, startTime: form.startTime, endTime: form.endTime }) });
       }
-      close(); await onCreated();
+      close();
+      // Targeted update (same rule as applyOrderSaved: a recurrence's create
+      // can only ever affect orders/transactions/dashboard, never clients/
+      // employees/services) - fetch just the order this call created (already
+      // the full nested shape every other order-update path uses) instead of
+      // loadAll()'s six parallel requests. Only falls back to a full reload
+      // if this single GET itself fails, so the new OS never goes missing.
+      try {
+        const fullOrder = await api<Order>(`/api/orders/${created.order.id}`);
+        await onOrderCreated(fullOrder);
+      } catch {
+        await reload().catch(() => {});
+      }
     } catch (err) {
       const field = err instanceof ApiError ? err.field : undefined;
       const message = err instanceof Error ? err.message : "Nao foi possivel criar a recorrencia agora. Tente novamente.";
