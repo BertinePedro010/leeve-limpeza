@@ -30,7 +30,7 @@ const orderPdfInclude = {
   appointments: { include: { employee: { select: { id: true, name: true } } }, orderBy: [{ date: "asc" as const }, { startTime: "asc" as const }] },
   // At most one active recurrence per OS in practice, but selected as a list
   // (matches the schema's 1:N) so a historical/inactive row never hides data.
-  recurringSchedules: { select: { id: true, frequency: true, interval: true, dayOfWeek: true, daysOfWeek: true, dayOfMonth: true, startDate: true, endDate: true, active: true } },
+  recurringSchedules: { select: { id: true, frequency: true, interval: true, dayOfWeek: true, daysOfWeek: true, dayOfMonth: true, startDate: true, endDate: true, active: true, price: true } },
 } satisfies Prisma.ServiceOrderInclude;
 
 export type OrderForPdf = Prisma.ServiceOrderGetPayload<{ include: typeof orderPdfInclude }>;
@@ -148,6 +148,13 @@ export function buildOrderPdf(order: OrderForPdf): Promise<Buffer> {
       doc.text(`Frequencia: ${recurrenceFrequencyLabel(schedule)}`);
       doc.text(`Dia: ${recurrenceDayLabel(schedule)}`);
       doc.text(`Periodo: ${recurrencePeriodLabel(schedule)}`);
+      // Distinct from "Servicos contratados" above (o preco real do servico)
+      // and from "valor por atendimento" below (order.totalAmount x
+      // ocorrencias, regra existente e inalterada) - este e o valor mensal
+      // contratado para a recorrencia (RecurringSchedule.price), nunca
+      // confundido com nenhum dos dois.
+      doc.font("Helvetica-Bold").text(`Valor mensal da recorrencia: ${money(schedule.price)}`);
+      doc.font("Helvetica");
       doc.text(`Ocorrencias geradas: ${order.appointments.length}`);
       if (!schedule.active) { doc.fillColor("#888"); doc.text("(recorrencia encerrada/inativa)"); doc.fillColor("#000"); }
       doc.moveDown();

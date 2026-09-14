@@ -55,6 +55,17 @@ export async function POST(request: Request) {
     }
     const address = orderAddressSnapshot(client);
 
+    // The OS item/total must always reflect the service's own cadastro
+    // price, never `parsed.data.price` ("valor mensal") - that field is a
+    // separate, independent concept (the recurrence's own monthly/contract
+    // value, stored only on RecurringSchedule.price below) and must never
+    // contaminate the item's unit price or the order's total. Never trust
+    // the frontend for this even though it now sends the same number by
+    // default - `service` was already looked up and branch-validated above,
+    // so its `price` is the authoritative source, exactly like a normal OS
+    // creation (see app/api/orders' own `total()` helper for the same rule).
+    const unitPrice = Number(service.price);
+
     const { location: _location, employeeIds, dayOfWeek: _dayOfWeek, daysOfWeek: _daysOfWeek, ...schedulePayload } = parsed.data;
     // Normalize to a sorted, deduped list for weekly schedules (monthly
     // schedules carry no weekday at all); dayOfWeek keeps mirroring the
@@ -76,9 +87,9 @@ export async function POST(request: Request) {
           ...address,
           location: formatOrderAddressLine(address),
           status: "agendado",
-          totalAmount: parsed.data.price,
+          totalAmount: unitPrice,
           createdBy: auth.userId,
-          items: { create: [{ serviceId: parsed.data.serviceId, quantity: 1, unitPrice: parsed.data.price }] },
+          items: { create: [{ serviceId: parsed.data.serviceId, quantity: 1, unitPrice }] },
           employees: { create: employeeIds.map((employeeId) => ({ employeeId })) },
         },
       });
