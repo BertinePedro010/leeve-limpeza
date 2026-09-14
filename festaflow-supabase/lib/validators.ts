@@ -39,7 +39,13 @@ export const recurringScheduleSchema = z.object({
   serviceId: z.string().uuid(),
   frequency: z.enum(["weekly", "monthly"]),
   interval: z.coerce.number().int().positive().default(1),
+  // Legacy single-day field - still accepted for backward compatibility, but
+  // superseded by daysOfWeek below for weekly schedules (see app/api/recurring-schedules).
   dayOfWeek: z.coerce.number().int().min(0).max(6).optional().nullable(),
+  // One or more weekdays for a weekly recurrence (e.g. Segunda+Quarta+Sexta).
+  // Required (min 1) when frequency=weekly - enforced below, never trusting
+  // frontend-only validation.
+  daysOfWeek: z.array(z.coerce.number().int().min(0).max(6)).optional(),
   dayOfMonth: z.coerce.number().int().min(1).max(31).optional().nullable(),
   startTime: z.string().min(1),
   endTime: z.string().min(1),
@@ -50,6 +56,9 @@ export const recurringScheduleSchema = z.object({
   // client's cadastro, exactly like a normal OS (see app/api/recurring-schedules).
   location: z.string().optional().nullable(),
   employeeIds: z.array(z.string().uuid()).default([]),
+}).refine((data) => data.frequency !== "weekly" || (data.daysOfWeek?.length ?? 0) >= 1, {
+  message: "Selecione pelo menos um dia da semana para a recorrencia.",
+  path: ["daysOfWeek"],
 });
 
 export const branchSchema = z.object({ name: z.string().min(2), city: z.string().min(2), state: z.string().length(2), active: z.coerce.boolean().default(true) });

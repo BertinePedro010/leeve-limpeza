@@ -397,7 +397,18 @@ model RecurringSchedule {
   serviceId      String              @map("service_id") @db.Uuid
   frequency      RecurrenceFrequency
   interval       Int                 @default(1)
+  // Legacy single-day column, kept for backward compatibility with rows
+  // created before multi-day weekly recurrence existed - always mirrors
+  // min(daysOfWeek) for weekly schedules going forward (see
+  // app/api/recurring-schedules). Never read directly by new code; use
+  // daysOfWeek (falls back to this column - see lib/recurrence.ts /
+  // lib/recurrence-label.ts) instead.
   dayOfWeek      Int?                @map("day_of_week")
+  // One or more weekdays (0=Domingo..6=Sabado) for a weekly recurrence - lets
+  // a single OS/recurrence generate appointments on several days per week
+  // (e.g. Segunda+Quarta+Sexta). Empty for monthly schedules and for weekly
+  // rows created before this field existed (those fall back to dayOfWeek).
+  daysOfWeek     Int[]               @default([]) @map("days_of_week")
   dayOfMonth     Int?                @map("day_of_month")
   startTime      String              @map("start_time") @db.VarChar(10)
   endTime        String              @map("end_time") @db.VarChar(10)

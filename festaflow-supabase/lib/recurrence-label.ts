@@ -10,6 +10,7 @@ export type RecurrenceLabelInput = {
   frequency: string;
   interval: number;
   dayOfWeek?: number | null;
+  daysOfWeek?: number[] | null;
   dayOfMonth?: number | null;
   startDate: Date | string;
   endDate?: Date | string | null;
@@ -36,10 +37,16 @@ export function recurrenceFrequencyLabel(schedule: Pick<RecurrenceLabelInput, "f
   return schedule.interval > 1 ? `A cada ${schedule.interval} ${unitPlural}` : `A cada ${unit}`;
 }
 
-/** e.g. "Terca-feira" for weekly, "Dia 10" for monthly. */
-export function recurrenceDayLabel(schedule: Pick<RecurrenceLabelInput, "frequency" | "dayOfWeek" | "dayOfMonth">): string {
+/** e.g. "Segunda-feira, Quarta-feira e Sexta-feira" for weekly, "Dia 10" for monthly. */
+export function recurrenceDayLabel(schedule: Pick<RecurrenceLabelInput, "frequency" | "dayOfWeek" | "daysOfWeek" | "dayOfMonth">): string {
   if (schedule.frequency === "weekly") {
-    return typeof schedule.dayOfWeek === "number" ? WEEKDAY_LABELS[schedule.dayOfWeek] : "-";
+    // daysOfWeek is the source of truth; dayOfWeek is only a fallback for
+    // rows created before daysOfWeek existed (see lib/recurrence.ts).
+    const days = schedule.daysOfWeek?.length ? schedule.daysOfWeek : typeof schedule.dayOfWeek === "number" ? [schedule.dayOfWeek] : [];
+    if (days.length === 0) return "-";
+    const labels = [...new Set(days)].sort((a, b) => a - b).map((d) => WEEKDAY_LABELS[d]);
+    if (labels.length === 1) return labels[0];
+    return `${labels.slice(0, -1).join(", ")} e ${labels[labels.length - 1]}`;
   }
   return typeof schedule.dayOfMonth === "number" ? `Dia ${schedule.dayOfMonth}` : "-";
 }

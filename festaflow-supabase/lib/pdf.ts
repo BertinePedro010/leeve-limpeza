@@ -30,7 +30,7 @@ const orderPdfInclude = {
   appointments: { include: { employee: { select: { id: true, name: true } } }, orderBy: [{ date: "asc" as const }, { startTime: "asc" as const }] },
   // At most one active recurrence per OS in practice, but selected as a list
   // (matches the schema's 1:N) so a historical/inactive row never hides data.
-  recurringSchedules: { select: { id: true, frequency: true, interval: true, dayOfWeek: true, dayOfMonth: true, startDate: true, endDate: true, active: true } },
+  recurringSchedules: { select: { id: true, frequency: true, interval: true, dayOfWeek: true, daysOfWeek: true, dayOfMonth: true, startDate: true, endDate: true, active: true } },
 } satisfies Prisma.ServiceOrderInclude;
 
 export type OrderForPdf = Prisma.ServiceOrderGetPayload<{ include: typeof orderPdfInclude }>;

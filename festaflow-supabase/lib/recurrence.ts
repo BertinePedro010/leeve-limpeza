@@ -7,6 +7,17 @@ function daysInMonth(year: number, monthIndex: number): number {
   return new Date(year, monthIndex + 1, 0).getDate();
 }
 
+/**
+ * Weekdays (0=Sunday..6=Saturday) a weekly schedule fires on, sorted and
+ * deduped. Falls back to the legacy single `dayOfWeek` column (then to
+ * `startDate`'s weekday) for schedules created before `daysOfWeek` existed,
+ * so old recurrences keep generating exactly the same day.
+ */
+function weeklyTargetDays(schedule: RecurringSchedule): number[] {
+  const days = schedule.daysOfWeek?.length ? schedule.daysOfWeek : [schedule.dayOfWeek ?? schedule.startDate.getDay()];
+  return [...new Set(days)].sort((a, b) => a - b);
+}
+
 /** Computes occurrence dates for a schedule between [from, until], inclusive. */
 export function computeOccurrences(schedule: RecurringSchedule, from: Date, until: Date): Date[] {
   const dates: Date[] = [];
@@ -16,13 +27,32 @@ export function computeOccurrences(schedule: RecurringSchedule, from: Date, unti
   end.setHours(0, 0, 0, 0);
 
   if (schedule.frequency === "weekly") {
-    const targetDow = schedule.dayOfWeek ?? schedule.startDate.getDay();
-    let d = new Date(cursor);
-    while (d.getDay() !== targetDow) d.setDate(d.getDate() + 1);
-    while (d <= end) {
-      dates.push(new Date(d));
-      d.setDate(d.getDate() + 7 * schedule.interval);
+    const targetDays = weeklyTargetDays(schedule);
+
+    // Anchor the interval cadence to the Sunday of the week containing
+    // startDate, so "every N weeks" stays correctly phased across repeated
+    // generateAppointments calls (each call only knows `cursor`, not the
+    // schedule's original phase) - this also naturally generalizes the
+    // former single-day logic to multiple days per week.
+    const anchorWeekStart = new Date(schedule.startDate);
+    anchorWeekStart.setHours(0, 0, 0, 0);
+    anchorWeekStart.setDate(anchorWeekStart.getDate() - anchorWeekStart.getDay());
+
+    const weekStart = new Date(cursor);
+    weekStart.setDate(weekStart.getDate() - weekStart.getDay());
+    const msPerWeek = 7 * 24 * 60 * 60 * 1000;
+    const weeksFromAnchor = Math.round((weekStart.getTime() - anchorWeekStart.getTime()) / msPerWeek);
+    const rem = ((weeksFromAnchor % schedule.interval) + schedule.interval) % schedule.interval;
+    if (rem !== 0) weekStart.setDate(weekStart.getDate() + (schedule.interval - rem) * 7);
+
+    for (let w = new Date(weekStart); w <= end; w.setDate(w.getDate() + 7 * schedule.interval)) {
+      for (const dow of targetDays) {
+        const occurrence = new Date(w);
+        occurrence.setDate(occurrence.getDate() + dow);
+        if (occurrence >= cursor && occurrence <= end) dates.push(occurrence);
+      }
     }
+    dates.sort((a, b) => a.getTime() - b.getTime());
     return dates;
   }
 

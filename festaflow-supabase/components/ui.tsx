@@ -109,6 +109,45 @@ export function Save() {
   return <button className="rounded-xl bg-indigo-600 p-3 font-black text-white">Salvar</button>;
 }
 
+export const WEEKDAY_SHORT_LABELS = ["DOM", "SEG", "TER", "QUA", "QUI", "SEX", "SAB"];
+export const WEEKDAY_FULL_LABELS = ["Domingo", "Segunda-feira", "Terca-feira", "Quarta-feira", "Quinta-feira", "Sexta-feira", "Sabado"];
+
+// Toggle-button weekday picker for weekly recurrences (one or more days in
+// the same recurrence/OS - see RecurrenceModal). Same aria-pressed toggle
+// pattern as MultiDatePicker's calendar grid, same boolean|string `error`
+// convention as Input/Select, so it reads and behaves like every other form
+// control on this screen. `id` lets focusFormField scroll to and focus this
+// whole group when validation fails (there is no single input to target).
+export function WeekdaySelector({ selected, onChange, id, error }: { selected: number[]; onChange: (days: number[]) => void; id?: string; error?: boolean | string }) {
+  const message = typeof error === "string" ? error : undefined;
+  const hasError = !!error;
+  function toggle(day: number) {
+    onChange(selected.includes(day) ? selected.filter((d) => d !== day) : [...selected, day].sort((a, b) => a - b));
+  }
+  return (
+    <div id={id} tabIndex={-1} className="grid gap-2">
+      <div role="group" aria-label="Dias da semana" className="flex flex-wrap gap-2">
+        {WEEKDAY_SHORT_LABELS.map((label, day) => {
+          const isSelected = selected.includes(day);
+          return (
+            <button
+              key={day}
+              type="button"
+              aria-pressed={isSelected}
+              aria-label={WEEKDAY_FULL_LABELS[day]}
+              onClick={() => toggle(day)}
+              className={`flex h-11 w-14 items-center justify-center rounded-xl border text-xs font-black transition ${isSelected ? "border-indigo-600 bg-indigo-600 text-white shadow" : hasError ? "border-rose-300 text-slate-600 hover:bg-rose-50" : "border-slate-200 text-slate-600 hover:bg-indigo-50"}`}
+            >
+              {label}
+            </button>
+          );
+        })}
+      </div>
+      {message && <span role="alert" className="text-[11px] font-normal normal-case text-rose-600">{message}</span>}
+    </div>
+  );
+}
+
 // Scrolls to and focuses the field whose input carries this DOM id - shared
 // by every form that wires up per-field ids (client, OS, recorrencia)
 // instead of each screen reimplementing its own scroll/focus logic.

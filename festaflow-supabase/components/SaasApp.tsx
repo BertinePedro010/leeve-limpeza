@@ -3,7 +3,7 @@
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 import { BranchProvider, useBranch } from "@/lib/branch-context";
-import { statusLabels, money, dateOnly, dateOnlyLabel, api, ApiError, Badge, Modal, Stat, CrudShell, ActionButtons, Input, NumberInput, Text, Select, Save, paymentMethodLabel, paymentMethodOptions, EmployeeMultiSelect, CepField, brazilStateOptions, MultiDatePicker, focusFormField, FieldErrorSummary } from "@/components/ui";
+import { statusLabels, money, dateOnly, dateOnlyLabel, api, ApiError, Badge, Modal, Stat, CrudShell, ActionButtons, Input, NumberInput, Text, Select, Save, paymentMethodLabel, paymentMethodOptions, EmployeeMultiSelect, CepField, brazilStateOptions, MultiDatePicker, focusFormField, FieldErrorSummary, WeekdaySelector } from "@/components/ui";
 import { hasStructuredOrderAddress, evaluateClientAddress, clientAddressErrorMessage, type ClientAddressState } from "@/lib/order-address";
 import { hasStructuredClientAddress } from "@/lib/client-address";
 import { isDuplicateClient, DUPLICATE_CLIENT_MESSAGE } from "@/lib/client-dedupe";
@@ -25,7 +25,7 @@ type Appointment = { id: string; orderId: string; branchId: string; employeeId?:
 type Branch = { id: string; name: string; city: string };
 // Same fields lib/pdf.ts selects for its own "Recorrencia" section - PDF and
 // print read the same shape from the same API response, never two rules.
-type RecurringSchedule = { id: string; frequency: "weekly" | "monthly"; interval: number; dayOfWeek?: number | null; dayOfMonth?: number | null; startDate: string; endDate?: string | null; active: boolean };
+type RecurringSchedule = { id: string; frequency: "weekly" | "monthly"; interval: number; dayOfWeek?: number | null; daysOfWeek?: number[] | null; dayOfMonth?: number | null; startDate: string; endDate?: string | null; active: boolean };
 type Order = { id: string; code: string; clientId: string; client?: Client; branch?: Branch; eventDate: string; startTime: string; endTime: string; location: string; addressZip?: string | null; addressStreet?: string | null; addressNumber?: string | null; addressNeighborhood?: string | null; addressCity?: string | null; addressState?: string | null; addressReference?: string | null; status: string; cancelledAt?: string | null; cancellationReason?: string | null; paymentMethod?: string | null; paymentMethodLegacy?: string | null; notes?: string; signatureName?: string; signatureDate?: string; totalAmount: string | number; items: OrderItem[]; employees: OrderEmployee[]; appointments: Appointment[]; recurringSchedules?: RecurringSchedule[] };
 type Transaction = { id: string; type: "receita" | "despesa"; category: string; description: string; amount: string | number; dueDate: string; paidAt?: string; status: "pago" | "pendente"; orderId?: string; paymentMethod?: string | null; isAutoRevenue?: boolean };
 type OccurrenceBucket = { count: number; total: number };
@@ -688,21 +688,32 @@ function AppointmentRow({ appointment, employees, occurrenceValue, serviceLabel,
 }
 
 function RecurrenceModal({ clients, services, employees, branchId, close, onCreated, onEditClient }: { clients: Client[]; services: Service[]; employees: Employee[]; branchId: string | null; close: () => void; onCreated: () => Promise<void>; onEditClient?: (clientId: string) => void }) {
-  const [form, setForm] = useState({ clientId: clients[0]?.id || "", serviceId: services[0]?.id || "", frequency: "monthly", interval: 1, dayOfWeek: 1, dayOfMonth: 10, startTime: "09:00", endTime: "11:00", price: 0, startDate: dateOnly(), endDate: "", employeeIds: [] as string[] });
+  const [form, setForm] = useState({ clientId: clients[0]?.id || "", serviceId: services[0]?.id || "", frequency: "monthly", interval: 1, daysOfWeek: [1] as number[], dayOfMonth: 10, startTime: "09:00", endTime: "11:00", price: 0, startDate: dateOnly(), endDate: "", employeeIds: [] as string[] });
   const [extraDates, setExtraDates] = useState<string[]>([]);
   const [error, setError] = useState("");
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   // Same rule as the OS form: the OS this recurrence creates snapshots its
   // address from the client's cadastro (see app/api/recurring-schedules).
   const selectedClient = clients.find((c) => c.id === form.clientId) ?? null;
   const clientAddressState = selectedClient ? evaluateClientAddress(selectedClient) : "missing";
   async function submit(e: FormEvent) {
-    e.preventDefault(); setError("");
+    e.preventDefault(); setError(""); setFieldErrors({});
     if (clientAddressState !== "ok") {
       setError(clientAddressErrorMessage(clientAddressState, selectedClient));
       return;
     }
+    // Same rule the backend enforces (lib/validators.ts recurringScheduleSchema)
+    // - checked here too only for instant feedback + focus; the API call
+    // below still re-validates and is what actually blocks the save.
+    if (form.frequency === "weekly" && form.daysOfWeek.length === 0) {
+      const message = "Selecione pelo menos um dia da semana para a recorrencia.";
+      setError(message);
+      setFieldErrors({ daysOfWeek: message });
+      focusFormField("recurrence-field-daysOfWeek");
+      return;
+    }
     try {
-      const payload = { ...form, branchId, endDate: form.endDate || null, dayOfWeek: form.frequency === "weekly" ? form.dayOfWeek : null, dayOfMonth: form.frequency === "monthly" ? form.dayOfMonth : null };
+      const payload = { ...form, branchId, endDate: form.endDate || null, dayOfMonth: form.frequency === "monthly" ? form.dayOfMonth : null };
       const created = await api<{ order: { id: string } }>("/api/recurring-schedules", { method: "POST", body: JSON.stringify(payload) });
       // Recurrence business logic is untouched - these are extra one-off
       // appointments attached to the same OS the recurrence just created,
@@ -711,9 +722,15 @@ function RecurrenceModal({ clients, services, employees, branchId, close, onCrea
         await api("/api/appointments", { method: "POST", body: JSON.stringify({ orderId: created.order.id, dates: extraDates, startTime: form.startTime, endTime: form.endTime }) });
       }
       close(); await onCreated();
-    } catch (err) { setError(err instanceof Error ? err.message : "Nao foi possivel criar a recorrencia agora. Tente novamente."); }
+    } catch (err) {
+      const field = err instanceof ApiError ? err.field : undefined;
+      const message = err instanceof Error ? err.message : "Nao foi possivel criar a recorrencia agora. Tente novamente.";
+      setError(message);
+      setFieldErrors(field ? { [field]: message } : {});
+      if (field) focusFormField(`recurrence-field-${field}`);
+    }
   }
-  return <Modal title="Nova Recorrencia" onClose={close}><form onSubmit={submit} className="grid gap-3">{error && <p role="alert" className="rounded-xl bg-rose-50 p-3 text-sm font-bold text-rose-600">{error}</p>}<Select value={form.clientId} set={(v) => setForm({ ...form, clientId: v })} options={clients.map((c) => [c.id, c.name])} /><Select value={form.serviceId} set={(v) => setForm({ ...form, serviceId: v })} options={services.map((s) => [s.id, `${s.name} - ${money(s.price)}`])} /><div className="grid gap-3 md:grid-cols-2"><Select value={form.frequency} set={(v) => setForm({ ...form, frequency: v })} options={[["weekly", "Semanal"], ["monthly", "Mensal"]]} /><NumberInput label={form.frequency === "weekly" ? "Repetir a cada (semanas)" : "Repetir a cada (meses)"} value={form.interval} set={(v) => setForm({ ...form, interval: v })} /></div>{form.frequency === "weekly" ? <Select value={String(form.dayOfWeek)} set={(v) => setForm({ ...form, dayOfWeek: Number(v) })} options={[["0", "Domingo"], ["1", "Segunda"], ["2", "Terca"], ["3", "Quarta"], ["4", "Quinta"], ["5", "Sexta"], ["6", "Sabado"]]} /> : <NumberInput label="Dia do mes" value={form.dayOfMonth} set={(v) => setForm({ ...form, dayOfMonth: v })} />}<div className="grid gap-3 md:grid-cols-2"><Input label="Horario inicio" value={form.startTime} set={(v) => setForm({ ...form, startTime: v })} /><Input label="Horario fim" value={form.endTime} set={(v) => setForm({ ...form, endTime: v })} /></div><NumberInput label="Valor mensal" value={form.price} set={(v) => setForm({ ...form, price: v })} /><div className="grid gap-3 md:grid-cols-2"><Input type="date" label="Data inicial" value={form.startDate} set={(v) => setForm({ ...form, startDate: v })} /><Input type="date" label="Data final (opcional)" value={form.endDate} set={(v) => setForm({ ...form, endDate: v })} /></div><ClientServiceAddressPanel client={selectedClient} addressState={clientAddressState} onEditClient={onEditClient} /><EmployeeMultiSelect employees={employees} selected={form.employeeIds} onChange={(ids) => setForm({ ...form, employeeIds: ids })} /><div className="rounded-2xl bg-slate-50 p-4"><h4 className="font-black">Datas avulsas adicionais (opcional)</h4><p className="text-xs text-slate-500">Alem das datas geradas automaticamente pela recorrencia, selecione no calendario atendimentos avulsos para a mesma OS e confirme de uma vez.</p><div className="mt-3"><MultiDatePicker onConfirm={(dates) => setExtraDates((prev) => [...new Set([...prev, ...dates])].sort())} disabledDates={extraDates} /></div>{extraDates.length > 0 && <div className="mt-3 flex flex-wrap gap-2">{extraDates.map((d) => <span key={d} className="flex items-center gap-2 rounded-full bg-indigo-50 px-3 py-1 text-xs font-bold text-indigo-700">{dateOnlyLabel(d)}<button type="button" onClick={() => setExtraDates(extraDates.filter((x) => x !== d))} className="text-rose-600">x</button></span>)}</div>}</div><p className="text-xs text-slate-500">Os atendimentos sao gerados automaticamente para os proximos meses e continuam sendo gerados de forma controlada enquanto a recorrencia estiver ativa.</p><button disabled={clientAddressState !== "ok"} className="rounded-xl bg-indigo-600 p-3 font-black text-white disabled:opacity-60">Salvar</button></form></Modal>;
+  return <Modal title="Nova Recorrencia" onClose={close}><form onSubmit={submit} className="grid gap-3">{Object.keys(fieldErrors).length > 0 ? <FieldErrorSummary title={error} errors={fieldErrors} fieldPrefix="recurrence-field-" /> : error && <p role="alert" className="rounded-xl bg-rose-50 p-3 text-sm font-bold text-rose-600">{error}</p>}<Select value={form.clientId} set={(v) => setForm({ ...form, clientId: v })} options={clients.map((c) => [c.id, c.name])} /><Select value={form.serviceId} set={(v) => setForm({ ...form, serviceId: v })} options={services.map((s) => [s.id, `${s.name} - ${money(s.price)}`])} /><div className="grid gap-3 md:grid-cols-2"><Select value={form.frequency} set={(v) => setForm({ ...form, frequency: v })} options={[["weekly", "Semanal"], ["monthly", "Mensal"]]} /><NumberInput label={form.frequency === "weekly" ? "Repetir a cada (semanas)" : "Repetir a cada (meses)"} value={form.interval} set={(v) => setForm({ ...form, interval: v })} /></div>{form.frequency === "weekly" ? <div className="grid gap-2"><span className="text-xs font-black uppercase text-slate-500">Dias da semana</span><p className="text-xs font-normal normal-case text-slate-500">Selecione um ou mais dias para definir em quais dias da semana o servico sera realizado.</p><WeekdaySelector id="recurrence-field-daysOfWeek" selected={form.daysOfWeek} onChange={(days) => { setForm({ ...form, daysOfWeek: days }); if (fieldErrors.daysOfWeek) setFieldErrors({}); }} error={fieldErrors.daysOfWeek} /></div> : <NumberInput label="Dia do mes" value={form.dayOfMonth} set={(v) => setForm({ ...form, dayOfMonth: v })} />}<div className="grid gap-3 md:grid-cols-2"><Input label="Horario inicio" value={form.startTime} set={(v) => setForm({ ...form, startTime: v })} /><Input label="Horario fim" value={form.endTime} set={(v) => setForm({ ...form, endTime: v })} /></div><NumberInput label="Valor mensal" value={form.price} set={(v) => setForm({ ...form, price: v })} /><div className="grid gap-3 md:grid-cols-2"><Input type="date" label="Data inicial" value={form.startDate} set={(v) => setForm({ ...form, startDate: v })} /><Input type="date" label="Data final (opcional)" value={form.endDate} set={(v) => setForm({ ...form, endDate: v })} /></div><ClientServiceAddressPanel client={selectedClient} addressState={clientAddressState} onEditClient={onEditClient} /><EmployeeMultiSelect employees={employees} selected={form.employeeIds} onChange={(ids) => setForm({ ...form, employeeIds: ids })} /><div className="rounded-2xl bg-slate-50 p-4"><h4 className="font-black">Datas avulsas adicionais (opcional)</h4><p className="text-xs text-slate-500">Alem das datas geradas automaticamente pela recorrencia, selecione no calendario atendimentos avulsos para a mesma OS e confirme de uma vez.</p><div className="mt-3"><MultiDatePicker onConfirm={(dates) => setExtraDates((prev) => [...new Set([...prev, ...dates])].sort())} disabledDates={extraDates} /></div>{extraDates.length > 0 && <div className="mt-3 flex flex-wrap gap-2">{extraDates.map((d) => <span key={d} className="flex items-center gap-2 rounded-full bg-indigo-50 px-3 py-1 text-xs font-bold text-indigo-700">{dateOnlyLabel(d)}<button type="button" onClick={() => setExtraDates(extraDates.filter((x) => x !== d))} className="text-rose-600">x</button></span>)}</div>}</div><p className="text-xs text-slate-500">Os atendimentos sao gerados automaticamente para os proximos meses e continuam sendo gerados de forma controlada enquanto a recorrencia estiver ativa.</p><button disabled={clientAddressState !== "ok"} className="rounded-xl bg-indigo-600 p-3 font-black text-white disabled:opacity-60">Salvar</button></form></Modal>;
 }
 
 // Downloads the server-generated PDF (lib/pdf.ts via GET /api/orders/:id/pdf)

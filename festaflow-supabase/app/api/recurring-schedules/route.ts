@@ -28,7 +28,11 @@ export async function POST(request: Request) {
     requireModule(auth, "orders");
     const body = await request.json();
     const parsed = recurringScheduleSchema.safeParse(body);
-    if (!parsed.success) return fail("Recorrencia invalida.", 422);
+    if (!parsed.success) {
+      const daysIssue = parsed.error.issues.find((issue) => issue.path[0] === "daysOfWeek");
+      if (daysIssue) return fail(daysIssue.message, 422, "daysOfWeek");
+      return fail("Recorrencia invalida.", 422);
+    }
     const branchId = resolveBranchIdForCreate(auth, parsed.data.branchId);
 
     const [client, service, employees] = await Promise.all([
@@ -51,7 +55,14 @@ export async function POST(request: Request) {
     }
     const address = orderAddressSnapshot(client);
 
-    const { location: _location, employeeIds, ...schedulePayload } = parsed.data;
+    const { location: _location, employeeIds, dayOfWeek: _dayOfWeek, daysOfWeek: _daysOfWeek, ...schedulePayload } = parsed.data;
+    // Normalize to a sorted, deduped list for weekly schedules (monthly
+    // schedules carry no weekday at all); dayOfWeek keeps mirroring the
+    // lowest selected day for any code/tooling still reading the legacy
+    // single-day column (see prisma/schema.prisma RecurringSchedule).
+    const isWeekly = parsed.data.frequency === "weekly";
+    const daysOfWeek = isWeekly ? [...new Set(parsed.data.daysOfWeek ?? [])].sort((a, b) => a - b) : [];
+    const dayOfWeek = isWeekly ? (daysOfWeek[0] ?? null) : null;
 
     const result = await prisma.$transaction(async (tx) => {
       const order = await tx.serviceOrder.create({
@@ -73,7 +84,7 @@ export async function POST(request: Request) {
       });
 
       const schedule = await tx.recurringSchedule.create({
-        data: { ...schedulePayload, branchId, orderId: order.id, createdBy: auth.userId },
+        data: { ...schedulePayload, dayOfWeek, daysOfWeek, branchId, orderId: order.id, createdBy: auth.userId },
       });
 
       return { order, schedule };
