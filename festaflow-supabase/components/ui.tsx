@@ -41,8 +41,24 @@ export class ApiError extends Error {
   }
 }
 
+// A 401 means the session is missing/expired (see lib/authz.ts requireAuth) -
+// handled globally here instead of by every caller, so no screen is ever
+// left showing stale data or a confusing error for something the user can
+// only fix by logging in again. Sends the browser to /login with a flag
+// LoginClient reads to show "Sua sessao expirou..." - never silently retried,
+// never left as a blank/broken shell.
+function handleExpiredSession() {
+  if (typeof window === "undefined") return;
+  if (window.location.pathname.startsWith("/login")) return;
+  window.location.href = "/login?expired=1";
+}
+
 export async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
   const res = await fetch(path, { ...options, headers: { "Content-Type": "application/json", ...(options.headers || {}) } });
+  if (res.status === 401) {
+    handleExpiredSession();
+    throw new ApiError("Sua sessao expirou. Faca login novamente.");
+  }
   const data = await res.json().catch(() => null);
   if (!res.ok) throw new ApiError(data?.message || "Nao foi possivel concluir esta operacao agora. Tente novamente.", data?.field);
   return data;

@@ -1,6 +1,6 @@
 import type { UserRole } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { requireUser } from "@/lib/auth";
+import { getCurrentUser } from "@/lib/auth";
 import { fail } from "@/lib/json";
 
 // Authorization is data-driven from `user_branches`, never inferred from `role`.
@@ -21,8 +21,25 @@ export interface AuthContext {
   branchIds: string[];
 }
 
+// CRITICAL: never call lib/auth.ts's requireUser() here (or anything else
+// that calls next/navigation's redirect()) - redirect() throws a special
+// signal meant for Server Components/Pages. Inside an app/api/**/route.ts
+// handler it turns into a real HTTP 307 to /login instead of a JSON error.
+// The frontend's fetch() calls follow redirects by default, so that 307 was
+// silently swallowed: `api()` (components/ui.tsx) saw a 200 response (the
+// login page's HTML), failed to parse it as JSON, and returned `null` as if
+// the request had succeeded. Callers that assume an object/array shape (e.g.
+// loadAll() setting `orders` from a null response, or RecurrenceModal reading
+// `created.order.id`) then threw on the next render - and with no Error
+// Boundary anywhere in the app, that crashed/blanked the whole screen. This
+// is what looked like "the app closes" when creating a recurrence with an
+// expired session. Fix: never redirect from API code - return a clean 401
+// JSON error instead, so `api()` throws a real, catchable ApiError.
 export async function requireAuth(): Promise<AuthContext> {
-  const user = await requireUser();
+  const user = await getCurrentUser();
+  if (!user) {
+    throw new AuthzError("Sessao expirada ou invalida. Faca login novamente.", 401);
+  }
   const profile = await prisma.profile.findUnique({
     where: { id: user.id },
     include: { branches: { select: { branchId: true } } },
@@ -129,9 +146,18 @@ export function assertRecordBranchAccess<T extends { branchId: string } | null |
   }
 }
 
+// Every app/api/**/route.ts handler funnels its catch block through here.
+// Any error that is not our own AuthzError is unexpected (Prisma, a genuine
+// bug, etc.) - it must still come back as a clean JSON response (never a
+// framework default HTML/empty 500) so the frontend's `api()` helper can
+// always parse it and show the user a real message instead of a broken
+// screen. The technical detail is logged server-side only; nothing here ever
+// carries a password/token/secret (AuthContext and Prisma error objects
+// don't hold those).
 export function handleAuthzError(error: unknown) {
   if (error instanceof AuthzError) return fail(error.message, error.status);
-  throw error;
+  console.error("[api] unexpected error:", error);
+  return fail("Nao foi possivel concluir a operacao agora. Tente novamente.", 500);
 }
 
 /**

@@ -15,13 +15,22 @@ import type { prisma } from "@/lib/prisma";
 // starting from it. This also self-heals a previous collision: a failed
 // create rolls its transaction back (count unchanged), so without this probe
 // every retry would keep generating the exact same taken code forever.
+// Bounds the probe: a real collision run is expected to resolve in a handful
+// of iterations (branch counts only ever drift by however many orders exist
+// in OTHER branches). A run that still hasn't found a free code after this
+// many tries means something is actually wrong (e.g. `code` generation logic
+// broken) - fail loudly with a clear message instead of holding the
+// transaction's single DB connection open indefinitely.
+const MAX_CODE_PROBES = 2000;
+
 export async function nextOrderCode(client: Prisma.TransactionClient | typeof prisma, branchId: string): Promise<string> {
   const year = new Date().getFullYear();
   let count = await client.serviceOrder.count({ where: { branchId } });
-  for (;;) {
+  for (let probes = 0; probes < MAX_CODE_PROBES; probes += 1) {
     const code = `OS-${year}-${String(count + 1).padStart(4, "0")}`;
     const existing = await client.serviceOrder.findUnique({ where: { code }, select: { id: true } });
     if (!existing) return code;
     count += 1;
   }
+  throw new Error(`nextOrderCode: nao foi possivel gerar um codigo livre para a filial ${branchId} apos ${MAX_CODE_PROBES} tentativas.`);
 }

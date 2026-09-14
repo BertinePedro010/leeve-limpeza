@@ -18,7 +18,15 @@ export default function LoginClient() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
-  const [message, setMessage] = useState("");
+  // Lands here with ?expired=1 whenever api() (components/ui.tsx) catches a
+  // 401 from an authenticated request - reading window.location.search
+  // directly (not next/navigation's useSearchParams) avoids requiring a
+  // Suspense boundary for this one flag.
+  const [message, setMessage] = useState(() =>
+    typeof window !== "undefined" && new URLSearchParams(window.location.search).get("expired") === "1"
+      ? "Sua sessao expirou. Faca login novamente."
+      : ""
+  );
   const [loading, setLoading] = useState(false);
 
   async function submit(e: FormEvent) {
