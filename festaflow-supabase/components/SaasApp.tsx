@@ -356,25 +356,30 @@ function ServicesView({ data, branchId, reload, loading }: { data: Service[]; br
 // /api/orders/summary). Counts one row per OS (never per appointment) and
 // values come from ServiceOrder.totalAmount - same figure as the table's
 // "Valor" column.
-type ClientSearchSummary = { clientNames: string[]; totalOrders: number; totalValue: number; byStatus: Record<string, { count: number; value: number }> };
-const SUMMARY_STATUS_KEYS = ORDER_STATUS_VALUES;
+type ClientSearchSummary = { clientNames: string[]; totalOrders: number; totalValue: number; valorMensal: number; byStatus: Record<string, { count: number; value: number }> };
 
+// Exactly the 4 indicators requested: Total Agendado/Realizado are OS counts
+// (never atendimentos - see byStatus, already one row per OS from
+// /api/orders/summary's own COUNT(*) on service_orders), Valor Mensal is the
+// client's own contracted recurring value (RecurringSchedule.price, summed
+// server-side - never atendimentos x valor mensal), Valor Total is the real
+// total of the OS found (lib/order-total.ts's rule, already applied by
+// /api/orders/summary). Reuses the existing Stat card component - same
+// visual pattern as Dashboard/Relatorios, no new indicator style introduced.
 function ClientSummaryPanel({ summary, term }: { summary: ClientSearchSummary; term: string }) {
   const heading = summary.clientNames.length === 1 ? summary.clientNames[0]
     : summary.clientNames.length > 1 ? `${summary.clientNames.length} clientes: ${summary.clientNames.join(", ")}`
     : term;
+  const agendado = summary.byStatus.agendado?.count ?? 0;
+  const realizado = summary.byStatus.realizado?.count ?? 0;
   return <div className="rounded-2xl border bg-white p-5 shadow-sm">
     <p className="text-[10px] font-black uppercase tracking-wider text-slate-400">Resumo do cliente</p>
-    <div className="mt-2 flex flex-wrap items-baseline justify-between gap-2">
-      <h4 className="font-black">{heading}</h4>
-      <p className="text-sm font-bold text-slate-500">{summary.totalOrders} OS &middot; {money(summary.totalValue)}</p>
-    </div>
-    <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-      {SUMMARY_STATUS_KEYS.map((k) => {
-        const s = summary.byStatus[k] ?? { count: 0, value: 0 };
-        return <div key={k} className="flex items-center justify-between rounded-xl bg-slate-50 px-3 py-2 text-sm"><span className="font-bold text-slate-600">{statusLabels[k]}</span><span className="font-black text-slate-900">{s.count} OS &middot; {money(s.value)}</span></div>;
-      })}
-      <div className="flex items-center justify-between rounded-xl bg-indigo-50 px-3 py-2 text-sm"><span className="font-black text-indigo-700">TOTAL</span><span className="font-black text-indigo-700">{summary.totalOrders} OS &middot; {money(summary.totalValue)}</span></div>
+    <h4 className="mt-1 font-black">{heading}</h4>
+    <div className="mt-4 grid gap-3 sm:grid-cols-2">
+      <Stat label="Total agendado" value={`${agendado} OS`} />
+      <Stat label="Total realizado" value={`${realizado} OS`} tone="emerald" />
+      <Stat label="Valor mensal" value={money(summary.valorMensal)} tone="amber" />
+      <Stat label="Valor total" value={money(summary.totalValue)} />
     </div>
   </div>;
 }

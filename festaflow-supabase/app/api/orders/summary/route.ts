@@ -32,7 +32,7 @@ export async function GET(request: Request) {
     );
 
     if (!clientSearch) {
-      return ok(serialize({ clientNames: [], totalOrders: 0, totalValue: 0, byStatus }));
+      return ok(serialize({ clientNames: [], totalOrders: 0, totalValue: 0, valorMensal: 0, byStatus }));
     }
 
     const branchIds = resolveBranchFilter(auth, branchId).in;
@@ -70,6 +70,24 @@ export async function GET(request: Request) {
       select: { clientId: true, client: { select: { name: true } } },
       distinct: ["clientId"],
     });
+    // "Valor mensal" = the client's own contracted monthly value(s)
+    // (RecurringSchedule.price - see app/api/recurring-schedules), summed
+    // across every currently active recurrence matching this search/branch.
+    // Deliberately NOT derived from appointment counts or totalOrders/
+    // totalValue above - that field is a completely separate concept (see
+    // the fix in app/api/recurring-schedules' own POST handler) and reading
+    // it directly here, instead of recomputing it from occurrences, is
+    // exactly what avoids the "atendimentos x valor mensal" bug.
+    const valorMensalAgg = branchIds.length === 0 ? null : await prisma.recurringSchedule.aggregate({
+      where: {
+        active: true,
+        branchId: { in: branchIds },
+        client: { name: { contains: clientSearch, mode: "insensitive" } },
+        order: { deletedAt: null, cancelledAt: null },
+      },
+      _sum: { price: true },
+    });
+    const valorMensal = Number(valorMensalAgg?._sum.price ?? 0);
 
     let totalOrders = 0;
     let totalValue = 0;
@@ -84,7 +102,7 @@ export async function GET(request: Request) {
       .map((c) => c.client.name)
       .sort((a, b) => a.localeCompare(b));
 
-    return ok(serialize({ clientNames, totalOrders, totalValue, byStatus }));
+    return ok(serialize({ clientNames, totalOrders, totalValue, valorMensal, byStatus }));
   } catch (error) {
     return handleAuthzError(error);
   }
