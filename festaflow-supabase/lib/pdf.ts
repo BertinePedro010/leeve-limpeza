@@ -21,6 +21,7 @@ import type { Prisma } from "@prisma/client";
 import { hasStructuredOrderAddress } from "@/lib/order-address";
 import { orderStatusLabel } from "@/lib/order-status";
 import { recurrenceTypeLabel, recurrenceFrequencyLabel, recurrenceDayLabel, recurrencePeriodLabel } from "@/lib/recurrence-label";
+import { orderRealTotal } from "@/lib/order-total";
 
 const orderPdfInclude = {
   client: true,
@@ -195,7 +196,7 @@ export function buildOrderPdf(order: OrderForPdf): Promise<Buffer> {
         // app/api/dashboard/route.ts loadOccurrences): each non-cancelled
         // appointment inherits the OS's total_amount once. Not a new
         // financial rule - just applied here for the recurrence's own total.
-        const recurrenceTotal = nonCancelledCount * Number(order.totalAmount);
+        const recurrenceTotal = orderRealTotal(order.totalAmount, nonCancelledCount);
         doc.font("Helvetica").fontSize(10);
         doc.text(`${nonCancelledCount} atendimento(s) nao cancelado(s) - valor por atendimento: ${money(order.totalAmount)}`);
         doc.font("Helvetica-Bold").text(`Total da recorrencia: ${money(recurrenceTotal)}`);

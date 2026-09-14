@@ -5,6 +5,7 @@ import { syncOrderBilling } from "@/lib/billing";
 import { formatOrderAddressLine, orderAddressSnapshot, evaluateClientAddress, clientAddressErrorMessage } from "@/lib/order-address";
 import { fail, ok, serialize } from "@/lib/json";
 import { nextOrderCode } from "@/lib/order-code";
+import { orderRealTotal } from "@/lib/order-total";
 
 function total(items: Array<{ quantity: number; unitPrice: number }>) {
   return items.reduce((sum, item) => sum + item.quantity * Number(item.unitPrice), 0);
@@ -24,7 +25,17 @@ function total(items: Array<{ quantity: number; unitPrice: number }>) {
 // the same "Recorrencia" section from the same source, never two rules for
 // the same data (see recurring OS PDF/print fix).
 function include(canViewFinance: boolean) {
-  return { client: true, branch: { select: { id: true, name: true, city: true } }, items: { include: { service: true } }, employees: { include: { employee: true } }, transactions: canViewFinance, appointments: { include: { employee: { select: { id: true, name: true } } }, orderBy: [{ date: "asc" as const }, { startTime: "asc" as const }] }, recurringSchedules: { select: { id: true, frequency: true, interval: true, dayOfWeek: true, daysOfWeek: true, dayOfMonth: true, startDate: true, endDate: true, active: true, price: true } } };
+  return { client: true, branch: { select: { id: true, name: true, city: true } }, items: { include: { service: true } }, employees: { include: { employee: true } }, transactions: canViewFinance, appointments: { include: { employee: { select: { id: true, name: true } } }, orderBy: [{ date: "asc" as const }, { startTime: "asc" as const }] }, recurringSchedules: { select: { id: true, frequency: true, interval: true, dayOfWeek: true, daysOfWeek: true, dayOfMonth: true, startDate: true, endDate: true, active: true, price: true } }, _count: { select: { appointments: { where: { cancelledAt: null } } } } };
+}
+
+// `total` = orderRealTotal(totalAmount, non-cancelled appointment count) -
+// the OS's real value across every occurrence it actually has, distinct from
+// `totalAmount` (the value of a single occurrence). `_count` is Prisma's own
+// wire shape, never a frontend-facing field - stripped here so callers only
+// ever see the already-computed `total`.
+function withRealTotal<T extends { totalAmount: unknown; _count: { appointments: number } }>(order: T): Omit<T, "_count"> & { total: number } {
+  const { _count, ...rest } = order;
+  return { ...rest, total: orderRealTotal(order.totalAmount as number | string, _count.appointments) };
 }
 
 // Returns the validated client so the caller can snapshot its address into
@@ -74,7 +85,7 @@ export async function GET(request: Request) {
       orderBy: { eventDate: "asc" },
       include: include(canViewFinance),
     });
-    return ok(serialize(data));
+    return ok(serialize(data.map(withRealTotal)));
   } catch (error) {
     return handleAuthzError(error);
   }
@@ -150,7 +161,7 @@ export async function POST(request: Request) {
       // bug already fixed once for the cascade-cancel path in PUT below).
       return tx.serviceOrder.findUniqueOrThrow({ where: { id: order.id }, include: include(canViewFinance) });
     }, { timeout: 15000 });
-    return ok(serialize(data), 201);
+    return ok(serialize(withRealTotal(data)), 201);
   } catch (error) {
     return handleAuthzError(error);
   }

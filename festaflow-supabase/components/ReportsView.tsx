@@ -163,7 +163,7 @@ function columnsFor(type: ReportType): string[] {
     case "employee": return ["Data", "Horario", "Cliente", "OS", "Status"];
     case "services": return ["Servico", "OS", "Cliente", "Filial"];
     case "appointments": return ["Data", "Horario", "Cliente", "Servico", "Funcionario", "Filial", "Status"];
-    case "os": return ["Codigo", "Cliente", "Filial", "Atendimentos", "Pagamento", "Status", "Valor"];
+    case "os": return ["Codigo", "Cliente", "Filial", "Atendimentos", "Pagamento", "Status", "Valor unit.", "Total"];
     case "cancellations": return ["OS", "Cliente", "Atendimento", "Cancelado em", "Tipo", "Motivo"];
     // "clients" renders its own grouped layout (ClientsReport / ClientsPrintView),
     // never the flat table - ReportTable/ReportPrintView are not used for it.
@@ -194,7 +194,7 @@ function renderRow(type: ReportType, row: Record<string, unknown>) {
       const paymentMethod = row.paymentMethod as string | null;
       const paymentMethodLegacy = row.paymentMethodLegacy as string | null;
       const paymentLabel = paymentMethod ? (paymentMethodLabels[paymentMethod] || paymentMethod) : paymentMethodLegacy ? `${paymentMethodLegacy} (legado)` : "-";
-      return <>{cell(row.code)}{cell(row.client)}{cell(row.branch)}{cell(row.appointmentCount)}{cell(paymentLabel)}<td className="p-3"><Badge status={String(row.status)} /></td>{cell(money(row.totalAmount as number))}</>;
+      return <>{cell(row.code)}{cell(row.client)}{cell(row.branch)}{cell(row.appointmentCount)}{cell(paymentLabel)}<td className="p-3"><Badge status={String(row.status)} /></td>{cell(money(row.totalAmount as number))}{cell(money(row.total as number))}</>;
     }
     case "cancellations":
       return <>{cell(row.orderCode)}{cell(row.client)}{cell(fmtDate(row.appointmentDate as string))}{cell(fmtDate(row.cancelledAt as string, true))}{cell(row.type === "os_inteira" ? "OS inteira" : "Atendimento individual")}{cell(row.reason)}</>;

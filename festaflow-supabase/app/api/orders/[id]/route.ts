@@ -4,9 +4,19 @@ import { orderSchema, orderValidationError } from "@/lib/validators";
 import { syncOrderBilling } from "@/lib/billing";
 import { formatOrderAddressLine, orderAddressSnapshot, evaluateClientAddress, clientAddressErrorMessage, hasStructuredOrderAddress } from "@/lib/order-address";
 import { fail, ok, serialize } from "@/lib/json";
+import { orderRealTotal } from "@/lib/order-total";
 
 function total(items: Array<{ quantity: number; unitPrice: number }>) {
   return items.reduce((sum, item) => sum + item.quantity * Number(item.unitPrice), 0);
+}
+
+// See app/api/orders' own copy of this helper for the full rationale - same
+// rule, same shape, duplicated only because these two routes' `include()`
+// return slightly different Prisma payload types and a shared generic would
+// add more indirection than the four lines it saves.
+function withRealTotal<T extends { totalAmount: unknown; _count: { appointments: number } }>(order: T): Omit<T, "_count"> & { total: number } {
+  const { _count, ...rest } = order;
+  return { ...rest, total: orderRealTotal(order.totalAmount as number | string, _count.appointments) };
 }
 
 // `transactions` (real amounts/status/payment method) is exactly what the
@@ -20,7 +30,7 @@ function total(items: Array<{ quantity: number; unitPrice: number }>) {
 // PrintOrder can be opened from a single order fetched here too, and must
 // show the same "Recorrencia" section from the same source either way.
 function include(canViewFinance: boolean) {
-  return { client: true, branch: { select: { id: true, name: true, city: true } }, items: { include: { service: true } }, employees: { include: { employee: true } }, transactions: canViewFinance, appointments: { include: { employee: { select: { id: true, name: true } } }, orderBy: [{ date: "asc" as const }, { startTime: "asc" as const }] }, recurringSchedules: { select: { id: true, frequency: true, interval: true, dayOfWeek: true, daysOfWeek: true, dayOfMonth: true, startDate: true, endDate: true, active: true, price: true } } };
+  return { client: true, branch: { select: { id: true, name: true, city: true } }, items: { include: { service: true } }, employees: { include: { employee: true } }, transactions: canViewFinance, appointments: { include: { employee: { select: { id: true, name: true } } }, orderBy: [{ date: "asc" as const }, { startTime: "asc" as const }] }, recurringSchedules: { select: { id: true, frequency: true, interval: true, dayOfWeek: true, daysOfWeek: true, dayOfMonth: true, startDate: true, endDate: true, active: true, price: true } }, _count: { select: { appointments: { where: { cancelledAt: null } } } } };
 }
 
 // Used by the calendar (click an appointment -> load its full order) and by
@@ -34,7 +44,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
     const canViewFinance = auth.profile.role === "admin" || auth.profile.allowedModules.includes("finance");
     const order = await prisma.serviceOrder.findUnique({ where: { id, deletedAt: null }, include: include(canViewFinance) });
     assertRecordBranchAccess(auth, order, "OS nao encontrada.");
-    return ok(serialize(order));
+    return ok(serialize(withRealTotal(order)));
   } catch (error) {
     return handleAuthzError(error);
   }
@@ -140,7 +150,7 @@ export async function PUT(request: Request, { params }: { params: Promise<{ id: 
       await syncOrderBilling(tx, id, { order: updated });
       return tx.serviceOrder.findUniqueOrThrow({ where: { id }, include: include(canViewFinance) });
     }, { timeout: 15000 });
-    return ok(serialize(data));
+    return ok(serialize(withRealTotal(data)));
   } catch (error) {
     return handleAuthzError(error);
   }

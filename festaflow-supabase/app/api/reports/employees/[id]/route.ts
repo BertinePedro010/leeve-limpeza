@@ -24,20 +24,25 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
       orderBy: [{ date: "asc" }, { startTime: "asc" }],
     });
 
-    // Sum each distinct OS only once, even if the employee has multiple
-    // atendimentos on the same OS in the period.
-    const distinctOrders = new Map(appointments.map((a) => [a.order.id, a.order.totalAmount]));
-    const totalValue = [...distinctOrders.values()].reduce((sum, v) => sum + Number(v), 0);
+    // Value inherited per occurrence (see lib/order-total.ts) - if the
+    // employee did 3 atendimentos this period on the same recurring OS, the
+    // value they were responsible for is 3x order.totalAmount, not the OS's
+    // totalAmount once. Cancelled atendimentos never contribute value or
+    // count toward orderCount, same rule as everywhere else (see
+    // lib/order-status.ts). orderCount stays a distinct-OS count (how many
+    // different OS this employee touched) - unrelated to the value fix,
+    // still counted once per OS regardless of how many visits.
+    const nonCancelled = appointments.filter((a) => a.cancelledAt === null);
+    const totalValue = nonCancelled.reduce((sum, a) => sum + Number(a.order.totalAmount), 0);
+    const orderCount = new Set(nonCancelled.map((a) => a.order.id)).size;
 
-    // Cancellation is tracked via cancelledAt, not a status value - see
-    // lib/order-status.ts.
     const summary = {
       total: appointments.length,
-      realizado: appointments.filter((a) => a.cancelledAt === null && a.status === "realizado").length,
+      realizado: nonCancelled.filter((a) => a.status === "realizado").length,
       cancelado: appointments.filter((a) => a.cancelledAt !== null).length,
-      agendado: appointments.filter((a) => a.cancelledAt === null && a.status === "agendado").length,
+      agendado: nonCancelled.filter((a) => a.status === "agendado").length,
       totalValue,
-      orderCount: distinctOrders.size,
+      orderCount,
     };
 
     return ok(

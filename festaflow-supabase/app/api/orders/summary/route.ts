@@ -1,5 +1,5 @@
+import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import type { Prisma } from "@prisma/client";
 import { requireAuth, requireModule, resolveBranchFilter, handleAuthzError } from "@/lib/authz";
 import { ok, serialize } from "@/lib/json";
 import { ORDER_STATUS_VALUES } from "@/lib/order-status";
@@ -7,11 +7,16 @@ import { ORDER_STATUS_VALUES } from "@/lib/order-status";
 // Client search summary for the Ordens de Servico screen. Same module
 // ("orders"), same branch isolation (resolveBranchFilter validates the
 // requested branch against the caller's own user_branches) and the same
-// "one row per OS" model as the listing itself - the aggregation is a
-// groupBy on service_orders, so an OS with several appointments still
-// counts as exactly one OS. Value uses ServiceOrder.totalAmount, the same
-// figure the listing table shows in its "Valor" column - no new financial
-// rule. Returns zeros (not an error) when the search term is empty.
+// "one row per OS" model as the listing itself - COUNT(*) on service_orders,
+// so an OS with several appointments still counts as exactly one OS. Value
+// is the OS's REAL total (see lib/order-total.ts: totalAmount x its own
+// non-cancelled appointment count) - the same rule app/api/dashboard's
+// loadOccurrences already established, generalized here from "per
+// occurrence, grouped by appointment status" to "per OS, grouped by OS
+// status". A plain groupBy can't express "count x totalAmount" (that needs
+// a join + per-order subquery), hence the raw SQL, same style as
+// loadOccurrences. Returns zeros (not an error) when the search term is
+// empty.
 const STATUSES = ORDER_STATUS_VALUES;
 
 export async function GET(request: Request) {
@@ -30,36 +35,48 @@ export async function GET(request: Request) {
       return ok(serialize({ clientNames: [], totalOrders: 0, totalValue: 0, byStatus }));
     }
 
-    const where: Prisma.ServiceOrderWhereInput = {
-      deletedAt: null,
-      // Cancelled OS are tracked separately (cancelledAt) and must never be
-      // counted into the agendado/realizado breakdown here - same rule as
-      // the Dashboard's occurrence totals (see app/api/dashboard).
-      cancelledAt: null,
-      branchId: resolveBranchFilter(auth, branchId),
-      client: { name: { contains: clientSearch, mode: "insensitive" } },
-    };
-
-    const [grouped, distinctClients] = await Promise.all([
-      prisma.serviceOrder.groupBy({
-        by: ["status"],
-        where,
-        _count: { _all: true },
-        _sum: { totalAmount: true },
-      }),
-      prisma.serviceOrder.findMany({
-        where,
-        select: { clientId: true, client: { select: { name: true } } },
-        distinct: ["clientId"],
-      }),
-    ]);
+    const branchIds = resolveBranchFilter(auth, branchId).in;
+    // Cancelled OS are tracked separately (cancelledAt) and must never be
+    // counted into the agendado/realizado breakdown here - same rule as the
+    // Dashboard's occurrence totals (see app/api/dashboard). `clientSearch`
+    // is not wildcard-escaped (a literal "%"/"_" in a client name would
+    // behave like an ILIKE wildcard) - the same minor, harmless edge case
+    // Prisma's own `contains` avoids internally; acceptable here since this
+    // only ever narrows a search, never exposes data outside branchIds.
+    const grouped = branchIds.length === 0 ? [] : await prisma.$queryRaw<Array<{ status: string; count: number; value: number }>>(Prisma.sql`
+      SELECT so.status::text AS status,
+             COUNT(*)::int AS count,
+             COALESCE(SUM(so.total_amount * COALESCE(ac.appt_count, 0)), 0)::float8 AS value
+      FROM service_orders so
+      JOIN clients c ON c.id = so.client_id
+      LEFT JOIN LATERAL (
+        SELECT COUNT(*)::int AS appt_count
+        FROM appointments a
+        WHERE a.order_id = so.id AND a.cancelled_at IS NULL
+      ) ac ON true
+      WHERE so.deleted_at IS NULL
+        AND so.cancelled_at IS NULL
+        AND so.branch_id = ANY(ARRAY[${Prisma.join(branchIds)}]::uuid[])
+        AND c.name ILIKE '%' || ${clientSearch} || '%'
+      GROUP BY so.status
+    `);
+    const distinctClients = branchIds.length === 0 ? [] : await prisma.serviceOrder.findMany({
+      where: {
+        deletedAt: null,
+        cancelledAt: null,
+        branchId: { in: branchIds },
+        client: { name: { contains: clientSearch, mode: "insensitive" } },
+      },
+      select: { clientId: true, client: { select: { name: true } } },
+      distinct: ["clientId"],
+    });
 
     let totalOrders = 0;
     let totalValue = 0;
     for (const g of grouped) {
-      const value = Number(g._sum.totalAmount ?? 0);
-      byStatus[g.status] = { count: g._count._all, value };
-      totalOrders += g._count._all;
+      const value = Number(g.value);
+      byStatus[g.status] = { count: Number(g.count), value };
+      totalOrders += Number(g.count);
       totalValue += value;
     }
 

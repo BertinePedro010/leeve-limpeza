@@ -2,6 +2,7 @@ import { prisma } from "@/lib/prisma";
 import { requireAuth, requireModule, handleAuthzError } from "@/lib/authz";
 import { resolvePeriod, resolveReportBranchFilter } from "@/lib/reports";
 import { sumRevenue } from "@/lib/billing";
+import { orderRealTotal } from "@/lib/order-total";
 import { ok, serialize } from "@/lib/json";
 
 export async function GET(request: Request) {
@@ -32,7 +33,7 @@ export async function GET(request: Request) {
         include: {
           client: { select: { name: true } },
           branch: { select: { name: true } },
-          appointments: { select: { status: true } },
+          appointments: { select: { status: true, cancelledAt: true } },
         },
         orderBy: { createdAt: "desc" },
       }),
@@ -44,18 +45,26 @@ export async function GET(request: Request) {
       }),
     ]);
 
-    const data = orders.map((o) => ({
-      code: o.code,
-      client: o.client.name,
-      branch: o.branch.name,
-      status: o.status,
-      appointmentCount: o.appointments.length,
-      totalAmount: o.totalAmount,
-      paymentMethod: o.paymentMethod,
-      paymentMethodLegacy: o.paymentMethodLegacy,
-      createdAt: o.createdAt,
-      updatedAt: o.updatedAt,
-    }));
+    const data = orders.map((o) => {
+      const nonCancelledCount = o.appointments.filter((a) => !a.cancelledAt).length;
+      return {
+        code: o.code,
+        client: o.client.name,
+        branch: o.branch.name,
+        status: o.status,
+        appointmentCount: nonCancelledCount,
+        totalAmount: o.totalAmount,
+        // Real total across every occurrence this OS actually has - see
+        // lib/order-total.ts. Distinct from totalAmount (the value of a
+        // single occurrence), same rule the OS listing's own "Total" column
+        // and the client-search summary use.
+        total: orderRealTotal(o.totalAmount, nonCancelledCount),
+        paymentMethod: o.paymentMethod,
+        paymentMethodLegacy: o.paymentMethodLegacy,
+        createdAt: o.createdAt,
+        updatedAt: o.updatedAt,
+      };
+    });
 
     const faturamento = sumRevenue(transactions);
 
