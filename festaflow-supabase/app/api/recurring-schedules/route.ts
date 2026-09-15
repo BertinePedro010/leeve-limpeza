@@ -67,23 +67,19 @@ export async function POST(request: Request) {
     const unitPrice = Number(service.price);
 
     const { location: _location, employeeIds, dayOfWeek: _dayOfWeek, daysOfWeek: _daysOfWeek, ...schedulePayload } = parsed.data;
-    // Normalize to a sorted, deduped list for weekly schedules (monthly
-    // schedules carry no weekday at all); dayOfWeek keeps mirroring the
-    // lowest selected day for any code/tooling still reading the legacy
-    // single-day column (see prisma/schema.prisma RecurringSchedule).
-    // Biweekly (quinzenal) never accepts a client-chosen weekday - it is
-    // always locked to startDate's own weekday, so the first occurrence is
-    // always startDate itself and every following one is exactly 14 days
-    // later (see lib/recurrence.ts computeOccurrences, which reads this
-    // same daysOfWeek/dayOfWeek pair through the weekly code path).
+    // Normalize to a sorted, deduped list for weekly AND biweekly schedules
+    // (monthly schedules carry no weekday at all) - biweekly reuses the
+    // exact same multi-day selection as weekly, it only differs in the
+    // fixed 2-week step used by lib/recurrence.ts computeOccurrences.
+    // dayOfWeek keeps mirroring the lowest selected day for any code/tooling
+    // still reading the legacy single-day column (see prisma/schema.prisma
+    // RecurringSchedule). recurringScheduleSchema's refine already
+    // guarantees at least one day was selected for both frequencies.
     const isWeekly = parsed.data.frequency === "weekly";
     const isBiweekly = parsed.data.frequency === "biweekly";
-    const daysOfWeek = isWeekly
-      ? [...new Set(parsed.data.daysOfWeek ?? [])].sort((a, b) => a - b)
-      : isBiweekly
-        ? [parsed.data.startDate.getDay()]
-        : [];
-    const dayOfWeek = isWeekly || isBiweekly ? (daysOfWeek[0] ?? null) : null;
+    const usesWeekdays = isWeekly || isBiweekly;
+    const daysOfWeek = usesWeekdays ? [...new Set(parsed.data.daysOfWeek ?? [])].sort((a, b) => a - b) : [];
+    const dayOfWeek = usesWeekdays ? (daysOfWeek[0] ?? null) : null;
 
     const result = await prisma.$transaction(async (tx) => {
       const order = await tx.serviceOrder.create({
