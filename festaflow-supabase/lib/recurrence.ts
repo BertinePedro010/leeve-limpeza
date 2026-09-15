@@ -26,8 +26,14 @@ export function computeOccurrences(schedule: RecurringSchedule, from: Date, unti
   const end = new Date(until);
   end.setHours(0, 0, 0, 0);
 
-  if (schedule.frequency === "weekly") {
+  if (schedule.frequency === "weekly" || schedule.frequency === "biweekly") {
     const targetDays = weeklyTargetDays(schedule);
+    // Quinzenal is a fixed 14-day cycle, not a user-configurable interval -
+    // it reuses the weekly week-stepping logic below with the week-count
+    // hardcoded to 2, regardless of whatever `interval` happens to be
+    // stored on the row (recurringScheduleSchema / RecurrenceModal never
+    // expose an interval field for biweekly, so it is always 1 there).
+    const weekStep = schedule.frequency === "biweekly" ? 2 : schedule.interval;
 
     // Anchor the interval cadence to the Sunday of the week containing
     // startDate, so "every N weeks" stays correctly phased across repeated
@@ -42,10 +48,10 @@ export function computeOccurrences(schedule: RecurringSchedule, from: Date, unti
     weekStart.setDate(weekStart.getDate() - weekStart.getDay());
     const msPerWeek = 7 * 24 * 60 * 60 * 1000;
     const weeksFromAnchor = Math.round((weekStart.getTime() - anchorWeekStart.getTime()) / msPerWeek);
-    const rem = ((weeksFromAnchor % schedule.interval) + schedule.interval) % schedule.interval;
-    if (rem !== 0) weekStart.setDate(weekStart.getDate() + (schedule.interval - rem) * 7);
+    const rem = ((weeksFromAnchor % weekStep) + weekStep) % weekStep;
+    if (rem !== 0) weekStart.setDate(weekStart.getDate() + (weekStep - rem) * 7);
 
-    for (let w = new Date(weekStart); w <= end; w.setDate(w.getDate() + 7 * schedule.interval)) {
+    for (let w = new Date(weekStart); w <= end; w.setDate(w.getDate() + 7 * weekStep)) {
       for (const dow of targetDays) {
         const occurrence = new Date(w);
         occurrence.setDate(occurrence.getDate() + dow);

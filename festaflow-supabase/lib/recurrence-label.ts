@@ -27,19 +27,25 @@ function dateLabel(d: Date | string): string {
 }
 
 export function recurrenceTypeLabel(schedule: Pick<RecurrenceLabelInput, "frequency">): string {
-  return schedule.frequency === "weekly" ? "Semanal" : "Mensal";
+  if (schedule.frequency === "weekly") return "Semanal";
+  if (schedule.frequency === "biweekly") return "Quinzenal";
+  return "Mensal";
 }
 
-/** e.g. "A cada semana" / "A cada 2 semanas" / "A cada mes" / "A cada 3 meses". */
+/** e.g. "A cada semana" / "A cada 2 semanas" / "A cada 14 dias" / "A cada mes" / "A cada 3 meses". */
 export function recurrenceFrequencyLabel(schedule: Pick<RecurrenceLabelInput, "frequency" | "interval">): string {
+  // Biweekly ignores `interval` entirely - it is always a fixed 14-day
+  // cycle (see lib/recurrence.ts computeOccurrences), never a
+  // user-configurable "every N" like weekly/monthly.
+  if (schedule.frequency === "biweekly") return "A cada 14 dias";
   const unit = schedule.frequency === "weekly" ? "semana" : "mes";
   const unitPlural = schedule.frequency === "weekly" ? "semanas" : "meses";
   return schedule.interval > 1 ? `A cada ${schedule.interval} ${unitPlural}` : `A cada ${unit}`;
 }
 
-/** e.g. "Segunda-feira, Quarta-feira e Sexta-feira" for weekly, "Dia 10" for monthly. */
+/** e.g. "Segunda-feira, Quarta-feira e Sexta-feira" for weekly/biweekly, "Dia 10" for monthly. */
 export function recurrenceDayLabel(schedule: Pick<RecurrenceLabelInput, "frequency" | "dayOfWeek" | "daysOfWeek" | "dayOfMonth">): string {
-  if (schedule.frequency === "weekly") {
+  if (schedule.frequency === "weekly" || schedule.frequency === "biweekly") {
     // daysOfWeek is the source of truth; dayOfWeek is only a fallback for
     // rows created before daysOfWeek existed (see lib/recurrence.ts).
     const days = schedule.daysOfWeek?.length ? schedule.daysOfWeek : typeof schedule.dayOfWeek === "number" ? [schedule.dayOfWeek] : [];

@@ -71,9 +71,19 @@ export async function POST(request: Request) {
     // schedules carry no weekday at all); dayOfWeek keeps mirroring the
     // lowest selected day for any code/tooling still reading the legacy
     // single-day column (see prisma/schema.prisma RecurringSchedule).
+    // Biweekly (quinzenal) never accepts a client-chosen weekday - it is
+    // always locked to startDate's own weekday, so the first occurrence is
+    // always startDate itself and every following one is exactly 14 days
+    // later (see lib/recurrence.ts computeOccurrences, which reads this
+    // same daysOfWeek/dayOfWeek pair through the weekly code path).
     const isWeekly = parsed.data.frequency === "weekly";
-    const daysOfWeek = isWeekly ? [...new Set(parsed.data.daysOfWeek ?? [])].sort((a, b) => a - b) : [];
-    const dayOfWeek = isWeekly ? (daysOfWeek[0] ?? null) : null;
+    const isBiweekly = parsed.data.frequency === "biweekly";
+    const daysOfWeek = isWeekly
+      ? [...new Set(parsed.data.daysOfWeek ?? [])].sort((a, b) => a - b)
+      : isBiweekly
+        ? [parsed.data.startDate.getDay()]
+        : [];
+    const dayOfWeek = isWeekly || isBiweekly ? (daysOfWeek[0] ?? null) : null;
 
     const result = await prisma.$transaction(async (tx) => {
       const order = await tx.serviceOrder.create({
@@ -95,7 +105,10 @@ export async function POST(request: Request) {
       });
 
       const schedule = await tx.recurringSchedule.create({
-        data: { ...schedulePayload, dayOfWeek, daysOfWeek, branchId, orderId: order.id, createdBy: auth.userId },
+        // `interval` is meaningless for biweekly (the 14-day step is fixed,
+        // see lib/recurrence.ts) - forced to 1 here so the stored value is
+        // never a stale leftover from switching frequencies on the form.
+        data: { ...schedulePayload, interval: isBiweekly ? 1 : schedulePayload.interval, dayOfWeek, daysOfWeek, branchId, orderId: order.id, createdBy: auth.userId },
       });
 
       return { order, schedule };

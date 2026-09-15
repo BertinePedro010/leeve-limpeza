@@ -37,7 +37,7 @@ export const recurringScheduleSchema = z.object({
   branchId: z.string().uuid().optional(),
   clientId: z.string().uuid(),
   serviceId: z.string().uuid(),
-  frequency: z.enum(["weekly", "monthly"]),
+  frequency: z.enum(["weekly", "biweekly", "monthly"]),
   interval: z.coerce.number().int().positive().default(1),
   // Legacy single-day field - still accepted for backward compatibility, but
   // superseded by daysOfWeek below for weekly schedules (see app/api/recurring-schedules).
