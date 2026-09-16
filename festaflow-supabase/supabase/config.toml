@@ -201,9 +201,20 @@ sms_sent = 30
 # Number of anonymous sign-ins that can be made per hour per IP address. Requires enable_anonymous_sign_ins = true.
 anonymous_users = 30
 # Number of sessions that can be refreshed in a 5 minute interval per IP address.
-token_refresh = 150
+# Bumped for the local audit test suite (Playwright/Vitest run many
+# short-lived contexts against 127.0.0.1, each capable of triggering its own
+# server-side session refresh via lib/auth.ts's createSupabaseServerClient) -
+# the CLI default of 150/5min was being exhausted mid-run, silently
+# invalidating every test user's session for the rest of that run. Local-only
+# setting; production's hosted Supabase project has its own separate rate
+# limits, untouched by this file.
+token_refresh = 3000
 # Number of sign up and sign-in requests that can be made in a 5 minute interval per IP address (excludes anonymous users).
-sign_in_sign_ups = 30
+# Also bumped: repeated Playwright runs during the audit (each doing several
+# real signInWithPassword calls) were exhausting the CLI default of 30/5min,
+# causing login attempts to silently fail with neither an error message nor a
+# navigation - not an app bug. Local-only, same rationale as token_refresh above.
+sign_in_sign_ups = 1000
 # Number of OTP / Magic link verifications that can be made in a 5 minute interval per IP address.
 token_verifications = 30
 # Number of Web3 logins that can be made in a 5 minute interval per IP address.

@@ -47,6 +47,14 @@ async function main() {
   const adminId = await ensureAuthUser("admin@teste.local", "TesteAudit123!");
   const operadorId = await ensureAuthUser("operador@teste.local", "TesteAudit123!");
   const funcionarioId = await ensureAuthUser("funcionario@teste.local", "TesteAudit123!");
+  // Conta dedicada só para os testes E2E que fazem login real pela UI
+  // (tests/e2e/auth.spec.ts). Um signInWithPassword novo para a MESMA conta
+  // usada em outros specs (via tests/.auth/operador.json, gerado uma única
+  // vez no global.setup.ts) invalida a sessão congelada nesse arquivo assim
+  // que o Supabase Auth local emite uma nova - descoberto rodando a suíte
+  // inteira e vendo clients-crud/idor falharem só depois que auth.spec.ts
+  // logava de novo como "operador". Isolar a conta elimina a interferência.
+  const authTestId = await ensureAuthUser("authtest@teste.local", "TesteAudit123!");
 
   const adminProfile = await prisma.profile.upsert({
     where: { id: adminId },
@@ -63,13 +71,23 @@ async function main() {
     update: {},
     create: { id: funcionarioId, name: "Funcionario Teste", email: "funcionario@teste.local", role: "funcionario", allowedModules: ["calendar"] },
   });
+  const authTestProfile = await prisma.profile.upsert({
+    where: { id: authTestId },
+    update: {},
+    create: { id: authTestId, name: "Auth Test", email: "authtest@teste.local", role: "operador", allowedModules: ["clients", "employees", "services", "orders", "calendar", "finance", "reports"] },
+  });
 
-  // Admin com acesso às duas filiais (admin global); operador só na A;
-  // funcionario só na A - cobre o cenário de IDOR entre filiais (Fase 2).
-  for (const branchId of [branchA.id, branchB.id]) {
+  // Admin com acesso a TODAS as filiais ativas (inclusive as 3 "legadas" que
+  // já vêm inseridas pelas próprias migrations - ver migration
+  // 20260902120000) para satisfazer de fato requireGlobalAdmin() em
+  // lib/authz.ts; operador e funcionario só na filial A - cobre o cenário de
+  // IDOR entre filiais (Fase 2).
+  const allActiveBranches = await prisma.branch.findMany({ where: { active: true }, select: { id: true } });
+  for (const { id: branchId } of allActiveBranches) {
     await prisma.userBranch.upsert({ where: { userId_branchId: { userId: adminProfile.id, branchId } }, update: {}, create: { userId: adminProfile.id, branchId } });
   }
   await prisma.userBranch.upsert({ where: { userId_branchId: { userId: operadorProfile.id, branchId: branchA.id } }, update: {}, create: { userId: operadorProfile.id, branchId: branchA.id } });
+  await prisma.userBranch.upsert({ where: { userId_branchId: { userId: authTestProfile.id, branchId: branchA.id } }, update: {}, create: { userId: authTestProfile.id, branchId: branchA.id } });
   await prisma.userBranch.upsert({ where: { userId_branchId: { userId: funcionarioProfile.id, branchId: branchA.id } }, update: {}, create: { userId: funcionarioProfile.id, branchId: branchA.id } });
 
   // Clientes PF e PJ, incluindo acentos/caracteres especiais e um caso de
