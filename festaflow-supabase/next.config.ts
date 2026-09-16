@@ -34,6 +34,24 @@ const nextConfig: NextConfig = {
   outputFileTracingIncludes: {
     "/api/orders/**/*": ["./node_modules/pdfkit/**/*"],
   },
+  // Baseline security headers (Fase 3 da auditoria) - nenhum header de
+  // seguranca existia antes. Nao inclui CSP: o app tem varios inline
+  // event handlers / estilos Tailwind gerados e nenhum nonce por requisicao
+  // configurado, entao um CSP estrito quebraria a UI sem uma revisao propria
+  // e dedicada - registrado como item para decisao futura, nao feito aqui.
+  async headers() {
+    return [
+      {
+        source: "/:path*",
+        headers: [
+          { key: "X-Content-Type-Options", value: "nosniff" },
+          { key: "X-Frame-Options", value: "DENY" },
+          { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
+          { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=()" },
+        ],
+      },
+    ];
+  },
 };
 
 export default nextConfig;
