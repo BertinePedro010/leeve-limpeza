@@ -392,7 +392,18 @@ model Appointment {
 
 model RecurringSchedule {
   id             String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  orderId        String              @map("order_id") @db.Uuid
+  // Unique (not just indexed): the app has always treated an order's
+  // recurrence as 0-or-1 (order.recurringSchedules?.[0] in the PDF/print/
+  // client-summary code), but nothing enforced that at the DB level until
+  // "Transformar em recorrencia" added a second way to create a
+  // RecurringSchedule for an order that already exists (as opposed to the
+  // original flow, which always creates a brand-new order together with its
+  // schedule, so a collision was structurally impossible before). Without
+  // this constraint, two concurrent transform requests for the same OS can
+  // both pass the transaction's own COUNT-based guard under Postgres's
+  // default ReadCommitted isolation (classic TOCTOU) and each insert a row -
+  // see migration 20260918120000_recurring_schedule_order_unique.
+  orderId        String              @unique @map("order_id") @db.Uuid
   branchId       String              @map("branch_id") @db.Uuid
   clientId       String              @map("client_id") @db.Uuid
   serviceId      String              @map("service_id") @db.Uuid

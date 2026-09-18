@@ -387,6 +387,12 @@ function ClientSummaryPanel({ summary, term }: { summary: ClientSearchSummary; t
 function OrdersView({ orders, clients, employees, services, branchId, reload, onOrderSaved, loading, onEditClient }: { orders: Order[]; clients: Client[]; employees: Employee[]; services: Service[]; branchId: string | null; reload: () => Promise<void>; onOrderSaved: (order: Order) => Promise<void>; loading: boolean; onEditClient?: (clientId: string) => void }) {
   const [open, setOpen] = useState(false); const [print, setPrint] = useState<Order | null>(null); const [editing, setEditing] = useState<Order | null>(null);
   const [recurrenceOpen, setRecurrenceOpen] = useState(false);
+  // Opens the shared RecurrenceModal prefilled from a specific OS - "transform"
+  // attaches the recurrence to that same OS (no new OS); "template" creates a
+  // brand-new recurring OS using it only as a starting point (offered instead
+  // for a Realizada OS, whose own history must never be rewritten in place -
+  // see app/api/orders/[id]/transform-to-recurring).
+  const [recurrenceTarget, setRecurrenceTarget] = useState<{ order: Order; mode: "transform" | "template" } | null>(null);
   const [sending, setSending] = useState<{ order: Order; channel: SendChannel } | null>(null);
 
   // Client search. Server-side (never a frontend filter over `orders`): the
@@ -436,8 +442,13 @@ function OrdersView({ orders, clients, employees, services, branchId, reload, on
     <button onClick={() => { setEditing(o); setOpen(true); }} className="font-bold text-indigo-600">Editar</button>
     <button onClick={() => setSending({ order: o, channel: "email" })} className="font-bold text-emerald-600">E-mail</button>
     <button onClick={() => setSending({ order: o, channel: "whatsapp" })} className="font-bold text-emerald-600">WhatsApp</button>
+    {o.recurringSchedules && o.recurringSchedules.length > 0
+      ? <span className="text-xs font-bold text-slate-400">Recorrencia configurada</span>
+      : !o.cancelledAt && (o.status === "agendado"
+        ? <button onClick={() => setRecurrenceTarget({ order: o, mode: "transform" })} className="font-bold text-violet-600">Transformar em recorrencia</button>
+        : <button onClick={() => setRecurrenceTarget({ order: o, mode: "template" })} className="font-bold text-violet-600">Criar recorrencia a partir desta OS</button>)}
     <button onClick={() => removeOrder(o.id)} className="font-bold text-rose-600">Excluir</button>
-  </div></td></tr>; })}</tbody></table></div>{isSearching && !searchLoading && displayedOrders.length === 0 && <div className="rounded-2xl border bg-white p-6 text-sm text-slate-500">Nenhuma Ordem de Servico encontrada para este cliente.</div>}{isSearching && summary && summary.totalOrders > 0 && <ClientSummaryPanel summary={summary} term={debounced} />}{open && <OrderFormModal order={editing} orders={orders} clients={clients} employees={employees} services={services} branchId={branchId} onClose={() => setOpen(false)} reload={reload} onSaved={onOrderSaved} onEditClient={onEditClient} />}{print && <PrintOrder order={print} close={() => setPrint(null)} />}{recurrenceOpen && <RecurrenceModal clients={clients} services={services} employees={employees} branchId={branchId} close={() => setRecurrenceOpen(false)} onOrderCreated={onOrderSaved} reload={reload} onEditClient={onEditClient} />}{sending && <SendOrderModal order={sending.order} channel={sending.channel} onClose={() => setSending(null)} />}</div>;
+  </div></td></tr>; })}</tbody></table></div>{isSearching && !searchLoading && displayedOrders.length === 0 && <div className="rounded-2xl border bg-white p-6 text-sm text-slate-500">Nenhuma Ordem de Servico encontrada para este cliente.</div>}{isSearching && summary && summary.totalOrders > 0 && <ClientSummaryPanel summary={summary} term={debounced} />}{open && <OrderFormModal order={editing} orders={orders} clients={clients} employees={employees} services={services} branchId={branchId} onClose={() => setOpen(false)} reload={reload} onSaved={onOrderSaved} onEditClient={onEditClient} />}{print && <PrintOrder order={print} close={() => setPrint(null)} />}{recurrenceOpen && <RecurrenceModal clients={clients} services={services} employees={employees} branchId={branchId} close={() => setRecurrenceOpen(false)} onOrderCreated={onOrderSaved} reload={reload} onEditClient={onEditClient} />}{recurrenceTarget && <RecurrenceModal clients={clients} services={services} employees={employees} branchId={branchId} sourceOrder={recurrenceTarget.order} mode={recurrenceTarget.mode} close={() => setRecurrenceTarget(null)} onOrderCreated={onOrderSaved} reload={reload} onEditClient={onEditClient} />}{sending && <SendOrderModal order={sending.order} channel={sending.channel} onClose={() => setSending(null)} />}</div>;
 }
 
 type ShownAddress = { addressStreet?: string | null; addressNumber?: string | null; addressNeighborhood?: string | null; addressCity?: string | null; addressState?: string | null; addressZip?: string | null; addressReference?: string | null; location?: string | null };
@@ -697,16 +708,37 @@ function AppointmentRow({ appointment, employees, occurrenceValue, serviceLabel,
 // function OS saves already use (never clients/employees/services, which a
 // recurrence creation never touches); reload (the full loadAll()) is only a
 // fallback if the follow-up GET of the created order itself fails.
-function RecurrenceModal({ clients, services, employees, branchId, close, onOrderCreated, reload, onEditClient }: { clients: Client[]; services: Service[]; employees: Employee[]; branchId: string | null; close: () => void; onOrderCreated: (order: Order) => Promise<void>; reload: () => Promise<void>; onEditClient?: (clientId: string) => void }) {
+function RecurrenceModal({ clients, services, employees, branchId, close, onOrderCreated, reload, onEditClient, sourceOrder = null, mode = "create" }: { clients: Client[]; services: Service[]; employees: Employee[]; branchId: string | null; close: () => void; onOrderCreated: (order: Order) => Promise<void>; reload: () => Promise<void>; onEditClient?: (clientId: string) => void; sourceOrder?: Order | null; mode?: "create" | "transform" | "template" }) {
+  // Two prefilled modes reuse this exact same form/modal instead of a second
+  // implementation (see "Transformar em recorrencia"):
+  //  - "transform": attaches a RecurringSchedule to sourceOrder itself (POST
+  //    /api/orders/:id/transform-to-recurring) - no new OS, client/service
+  //    locked to what the OS already has.
+  //  - "template": creates a brand-new OS pre-filled from sourceOrder (same
+  //    POST /api/recurring-schedules "create" uses) - offered for a
+  //    Realizada OS, whose own history must never be rewritten in place.
   // `price` here is ONLY the recurrence's own "valor mensal" (RecurringSchedule.price)
-  // - it is never sent as the OS item's unit price/total anymore (the backend
-  // now always uses the selected service's own cadastro price for that, see
-  // app/api/recurring-schedules). Defaulting it to the service's price (never
-  // 0) gives a sensible "no monthly override" starting point; `priceTouched`
-  // below stops that default from silently overwriting a deliberate manual
-  // monthly value once the user has typed one.
-  const [form, setForm] = useState({ clientId: clients[0]?.id || "", serviceId: services[0]?.id || "", frequency: "monthly", interval: 1, daysOfWeek: [1] as number[], dayOfMonth: 10, startTime: "09:00", endTime: "11:00", price: Number(services[0]?.price ?? 0), startDate: dateOnly(), endDate: "", employeeIds: [] as string[] });
-  const [priceTouched, setPriceTouched] = useState(false);
+  // - for a plain create it defaults to the selected service's own cadastro
+  // price; when prefilled from an OS it defaults to that OS's own real total
+  // (its own items/quantities already determine the true per-atendimento
+  // value - see lib/order-total.ts - so this is a far better starting point
+  // than a single service's price). `priceTouched` stops either default from
+  // silently overwriting a deliberate manual value once the user has typed one.
+  const [form, setForm] = useState(() => sourceOrder ? {
+    clientId: sourceOrder.clientId,
+    serviceId: sourceOrder.items[0]?.serviceId || services[0]?.id || "",
+    frequency: "monthly" as string,
+    interval: 1,
+    daysOfWeek: [new Date(sourceOrder.eventDate).getUTCDay()] as number[],
+    dayOfMonth: new Date(sourceOrder.eventDate).getUTCDate(),
+    startTime: sourceOrder.startTime,
+    endTime: sourceOrder.endTime,
+    price: Number(sourceOrder.totalAmount),
+    startDate: dateOnly(sourceOrder.eventDate),
+    endDate: "",
+    employeeIds: sourceOrder.employees.map((x) => x.employee.id),
+  } : { clientId: clients[0]?.id || "", serviceId: services[0]?.id || "", frequency: "monthly" as string, interval: 1, daysOfWeek: [1] as number[], dayOfMonth: 10, startTime: "09:00", endTime: "11:00", price: Number(services[0]?.price ?? 0), startDate: dateOnly(), endDate: "", employeeIds: [] as string[] });
+  const [priceTouched, setPriceTouched] = useState(!!sourceOrder);
   const [extraDates, setExtraDates] = useState<string[]>([]);
   const [error, setError] = useState("");
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
@@ -715,10 +747,10 @@ function RecurrenceModal({ clients, services, employees, branchId, close, onOrde
   // address from the client's cadastro (see app/api/recurring-schedules).
   const selectedClient = clients.find((c) => c.id === form.clientId) ?? null;
   const clientAddressState = selectedClient ? evaluateClientAddress(selectedClient) : "missing";
-  // The item/total preview the user actually sees before saving - always the
-  // real service price, quantity 1, exactly what the backend will persist
-  // (see the unitPrice computation in app/api/recurring-schedules). Never
-  // derived from form.price ("valor mensal"), which is a separate number.
+  // "transform" can only ever use one of the OS's own already-contracted
+  // services (the backend re-validates this too) - "create"/"template" pick
+  // from the whole branch catalog, same as before.
+  const serviceOptions = mode === "transform" && sourceOrder ? services.filter((s) => sourceOrder.items.some((i) => i.serviceId === s.id)) : services;
   const selectedService = services.find((s) => s.id === form.serviceId) ?? null;
   const serviceUnitPrice = Number(selectedService?.price ?? 0);
   async function submit(e: FormEvent) {
@@ -741,10 +773,12 @@ function RecurrenceModal({ clients, services, employees, branchId, close, onOrde
       focusFormField("recurrence-field-daysOfWeek");
       return;
     }
+    if (mode === "transform" && !confirm("Deseja transformar esta OS em uma recorrencia?")) return;
     setSaving(true);
     try {
       const payload = { ...form, branchId, endDate: form.endDate || null, dayOfMonth: form.frequency === "monthly" ? form.dayOfMonth : null };
-      const created = await api<{ order: { id: string } }>("/api/recurring-schedules", { method: "POST", body: JSON.stringify(payload) });
+      const endpoint = mode === "transform" && sourceOrder ? `/api/orders/${sourceOrder.id}/transform-to-recurring` : "/api/recurring-schedules";
+      const created = await api<{ order: { id: string } }>(endpoint, { method: "POST", body: JSON.stringify(payload) });
       // Recurrence business logic is untouched - these are extra one-off
       // appointments attached to the same OS the recurrence just created,
       // added in a single batch POST (not one request per date).
@@ -766,14 +800,17 @@ function RecurrenceModal({ clients, services, employees, branchId, close, onOrde
       }
     } catch (err) {
       const field = err instanceof ApiError ? err.field : undefined;
-      const message = err instanceof Error ? err.message : "Nao foi possivel criar a recorrencia agora. Tente novamente.";
+      const fallback = mode === "transform" ? "Nao foi possivel transformar a OS em recorrencia agora. Tente novamente." : "Nao foi possivel criar a recorrencia agora. Tente novamente.";
+      const message = err instanceof Error ? err.message : fallback;
       setError(message);
       setFieldErrors(field ? { [field]: message } : {});
       if (field) focusFormField(`recurrence-field-${field}`);
       setSaving(false);
     }
   }
-  return <Modal title="Nova Recorrencia" onClose={close}><form onSubmit={submit} className="grid gap-3">{Object.keys(fieldErrors).length > 0 ? <FieldErrorSummary title={error} errors={fieldErrors} fieldPrefix="recurrence-field-" /> : error && <p role="alert" className="rounded-xl bg-rose-50 p-3 text-sm font-bold text-rose-600">{error}</p>}<Select value={form.clientId} set={(v) => setForm({ ...form, clientId: v })} options={clients.map((c) => [c.id, c.name])} /><Select value={form.serviceId} set={(v) => { const s = services.find((x) => x.id === v); setForm((prev) => ({ ...prev, serviceId: v, price: priceTouched ? prev.price : Number(s?.price ?? 0) })); }} options={services.map((s) => [s.id, `${s.name} - ${money(s.price)}`])} />{selectedService && <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4"><h4 className="text-xs font-black uppercase text-slate-500">Servicos contratados</h4><div className="mt-2 grid grid-cols-3 gap-2 text-sm"><p><b>{selectedService.name}</b></p><p>Quantidade: 1</p><p className="text-right font-black">{money(serviceUnitPrice)}</p></div></div>}<div className="grid gap-3 md:grid-cols-2"><Select value={form.frequency} set={(v) => setForm({ ...form, frequency: v })} options={[["weekly", "Semanal"], ["biweekly", "Quinzenal"], ["monthly", "Mensal"]]} />{form.frequency !== "biweekly" && <NumberInput label={form.frequency === "weekly" ? "Repetir a cada (semanas)" : "Repetir a cada (meses)"} value={form.interval} set={(v) => setForm({ ...form, interval: v })} />}</div>{(form.frequency === "weekly" || form.frequency === "biweekly") && <div className="grid gap-2"><span className="text-xs font-black uppercase text-slate-500">Dias da semana</span><p className="text-xs font-normal normal-case text-slate-500">{form.frequency === "biweekly" ? "Selecione um ou mais dias da semana. A recorrencia sera repetida a cada 14 dias." : "Selecione um ou mais dias para definir em quais dias da semana o servico sera realizado."}</p><WeekdaySelector id="recurrence-field-daysOfWeek" selected={form.daysOfWeek} onChange={(days) => { setForm({ ...form, daysOfWeek: days }); if (fieldErrors.daysOfWeek) setFieldErrors({}); }} error={fieldErrors.daysOfWeek} /></div>}{form.frequency === "monthly" && <NumberInput label="Dia do mes" value={form.dayOfMonth} set={(v) => setForm({ ...form, dayOfMonth: v })} />}<div className="grid gap-3 md:grid-cols-2"><Input label="Horario inicio" value={form.startTime} set={(v) => setForm({ ...form, startTime: v })} /><Input label="Horario fim" value={form.endTime} set={(v) => setForm({ ...form, endTime: v })} /></div><div className="rounded-2xl border border-slate-200 p-4"><h4 className="text-xs font-black uppercase text-slate-500">Cobranca da recorrencia</h4><div className="mt-2"><NumberInput label="Valor mensal" value={form.price} set={(v) => { setPriceTouched(true); setForm({ ...form, price: v }); }} /></div><p className="mt-2 text-xs text-slate-500">Valor mensal e o total cobrado por mes pela recorrencia e nao representa o valor de cada atendimento.</p></div><div className="grid gap-3 md:grid-cols-2"><Input type="date" label="Data inicial" value={form.startDate} set={(v) => setForm({ ...form, startDate: v })} /><Input type="date" label="Data final (opcional)" value={form.endDate} set={(v) => setForm({ ...form, endDate: v })} /></div><ClientServiceAddressPanel client={selectedClient} addressState={clientAddressState} onEditClient={onEditClient} /><EmployeeMultiSelect employees={employees} selected={form.employeeIds} onChange={(ids) => setForm({ ...form, employeeIds: ids })} /><div className="rounded-2xl bg-slate-50 p-4"><h4 className="font-black">Datas avulsas adicionais (opcional)</h4><p className="text-xs text-slate-500">Alem das datas geradas automaticamente pela recorrencia, selecione no calendario atendimentos avulsos para a mesma OS e confirme de uma vez.</p><div className="mt-3"><MultiDatePicker onConfirm={(dates) => setExtraDates((prev) => [...new Set([...prev, ...dates])].sort())} disabledDates={extraDates} /></div>{extraDates.length > 0 && <div className="mt-3 flex flex-wrap gap-2">{extraDates.map((d) => <span key={d} className="flex items-center gap-2 rounded-full bg-indigo-50 px-3 py-1 text-xs font-bold text-indigo-700">{dateOnlyLabel(d)}<button type="button" onClick={() => setExtraDates(extraDates.filter((x) => x !== d))} className="text-rose-600">x</button></span>)}</div>}</div><p className="text-xs text-slate-500">Os atendimentos sao gerados automaticamente para os proximos meses e continuam sendo gerados de forma controlada enquanto a recorrencia estiver ativa.</p><button disabled={clientAddressState !== "ok" || saving} className="rounded-xl bg-indigo-600 p-3 font-black text-white disabled:opacity-60">{saving ? "Salvando..." : "Salvar"}</button></form></Modal>;
+  const title = mode === "transform" ? `Transformar OS ${sourceOrder?.code} em recorrencia` : mode === "template" ? `Nova recorrencia a partir da OS ${sourceOrder?.code}` : "Nova Recorrencia";
+  const savingLabel = mode === "transform" ? "Transformando em recorrencia..." : mode === "template" ? "Criando recorrencia..." : "Salvando...";
+  return <Modal title={title} onClose={close}><form onSubmit={submit} className="grid gap-3">{sourceOrder && <p className="rounded-xl bg-indigo-50 p-3 text-sm font-bold text-indigo-700">{mode === "transform" ? "Esta OS sera transformada em uma recorrencia. Os dados atuais foram preenchidos automaticamente." : "Uma nova recorrencia sera criada usando os dados desta OS como modelo. Os dados atuais foram preenchidos automaticamente."}</p>}{Object.keys(fieldErrors).length > 0 ? <FieldErrorSummary title={error} errors={fieldErrors} fieldPrefix="recurrence-field-" /> : error && <p role="alert" className="rounded-xl bg-rose-50 p-3 text-sm font-bold text-rose-600">{error}</p>}<Select value={form.clientId} set={(v) => setForm({ ...form, clientId: v })} options={clients.map((c) => [c.id, c.name])} disabled={mode === "transform"} /><Select value={form.serviceId} set={(v) => { const s = services.find((x) => x.id === v); setForm((prev) => ({ ...prev, serviceId: v, price: priceTouched ? prev.price : Number(s?.price ?? 0) })); }} options={serviceOptions.map((s) => [s.id, `${s.name} - ${money(s.price)}`])} />{sourceOrder ? <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4"><h4 className="text-xs font-black uppercase text-slate-500">Servicos contratados nesta OS</h4>{sourceOrder.items.map((i, idx) => <div key={i.id ?? idx} className="mt-2 grid grid-cols-3 gap-2 text-sm"><p><b>{i.service?.name ?? "Servico"}</b></p><p>Quantidade: {i.quantity}</p><p className="text-right font-black">{money(i.quantity * Number(i.unitPrice))}</p></div>)}<p className="mt-3 text-right text-sm font-black">Total por atendimento: {money(sourceOrder.totalAmount)}</p></div> : selectedService && <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4"><h4 className="text-xs font-black uppercase text-slate-500">Servicos contratados</h4><div className="mt-2 grid grid-cols-3 gap-2 text-sm"><p><b>{selectedService.name}</b></p><p>Quantidade: 1</p><p className="text-right font-black">{money(serviceUnitPrice)}</p></div></div>}<div className="grid gap-3 md:grid-cols-2"><Select value={form.frequency} set={(v) => setForm({ ...form, frequency: v })} options={[["weekly", "Semanal"], ["biweekly", "Quinzenal"], ["monthly", "Mensal"]]} />{form.frequency !== "biweekly" && <NumberInput label={form.frequency === "weekly" ? "Repetir a cada (semanas)" : "Repetir a cada (meses)"} value={form.interval} set={(v) => setForm({ ...form, interval: v })} />}</div>{(form.frequency === "weekly" || form.frequency === "biweekly") && <div className="grid gap-2"><span className="text-xs font-black uppercase text-slate-500">Dias da semana</span><p className="text-xs font-normal normal-case text-slate-500">{form.frequency === "biweekly" ? "Selecione um ou mais dias da semana. A recorrencia sera repetida a cada 14 dias." : "Selecione um ou mais dias para definir em quais dias da semana o servico sera realizado."}</p><WeekdaySelector id="recurrence-field-daysOfWeek" selected={form.daysOfWeek} onChange={(days) => { setForm({ ...form, daysOfWeek: days }); if (fieldErrors.daysOfWeek) setFieldErrors({}); }} error={fieldErrors.daysOfWeek} /></div>}{form.frequency === "monthly" && <NumberInput label="Dia do mes" value={form.dayOfMonth} set={(v) => setForm({ ...form, dayOfMonth: v })} />}<div className="grid gap-3 md:grid-cols-2"><Input label="Horario inicio" value={form.startTime} set={(v) => setForm({ ...form, startTime: v })} /><Input label="Horario fim" value={form.endTime} set={(v) => setForm({ ...form, endTime: v })} /></div><div className="rounded-2xl border border-slate-200 p-4"><h4 className="text-xs font-black uppercase text-slate-500">Cobranca da recorrencia</h4><div className="mt-2"><NumberInput label="Valor mensal" value={form.price} set={(v) => { setPriceTouched(true); setForm({ ...form, price: v }); }} /></div><p className="mt-2 text-xs text-slate-500">Valor mensal e o total cobrado por mes pela recorrencia e nao representa o valor de cada atendimento.</p></div><div className="grid gap-3 md:grid-cols-2"><Input type="date" label="Data inicial" value={form.startDate} set={(v) => setForm({ ...form, startDate: v })} /><Input type="date" label="Data final (opcional)" value={form.endDate} set={(v) => setForm({ ...form, endDate: v })} /></div><ClientServiceAddressPanel client={selectedClient} addressState={clientAddressState} onEditClient={onEditClient} /><EmployeeMultiSelect employees={employees} selected={form.employeeIds} onChange={(ids) => setForm({ ...form, employeeIds: ids })} /><div className="rounded-2xl bg-slate-50 p-4"><h4 className="font-black">Datas avulsas adicionais (opcional)</h4><p className="text-xs text-slate-500">Alem das datas geradas automaticamente pela recorrencia, selecione no calendario atendimentos avulsos para a mesma OS e confirme de uma vez.</p><div className="mt-3"><MultiDatePicker onConfirm={(dates) => setExtraDates((prev) => [...new Set([...prev, ...dates])].sort())} disabledDates={extraDates} /></div>{extraDates.length > 0 && <div className="mt-3 flex flex-wrap gap-2">{extraDates.map((d) => <span key={d} className="flex items-center gap-2 rounded-full bg-indigo-50 px-3 py-1 text-xs font-bold text-indigo-700">{dateOnlyLabel(d)}<button type="button" onClick={() => setExtraDates(extraDates.filter((x) => x !== d))} className="text-rose-600">x</button></span>)}</div>}</div><p className="text-xs text-slate-500">Os atendimentos sao gerados automaticamente para os proximos meses e continuam sendo gerados de forma controlada enquanto a recorrencia estiver ativa.</p><button disabled={clientAddressState !== "ok" || saving} className="rounded-xl bg-indigo-600 p-3 font-black text-white disabled:opacity-60">{saving ? savingLabel : "Salvar"}</button></form></Modal>;
 }
 
 // Downloads the server-generated PDF (lib/pdf.ts via GET /api/orders/:id/pdf)

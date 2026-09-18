@@ -6,4 +6,10 @@ dist/
 *.log
 *.tsbuildinfo
 .env*.local
+.env.test
 !.env.local.example
+
+# Playwright: session storage state (test-user cookies) and reports
+tests/.auth/
+test-results/
+playwright-report/

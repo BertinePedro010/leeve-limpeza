@@ -14,11 +14,17 @@ release/
 .env
 .env.local
 .env.*.local
+.env.test
 **/.env
 **/.env.local
 **/.env.*.local
+**/.env.test
 !**/.env.example
 !**/.env.local.example
+
+# Supabase CLI local stack (Docker volumes, generated config)
+**/supabase/.branches
+**/supabase/.temp
 
 # Local databases
 *.db
