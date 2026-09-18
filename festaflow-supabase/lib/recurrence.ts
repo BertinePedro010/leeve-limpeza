@@ -1,7 +1,16 @@
 import { prisma } from "@/lib/prisma";
-import type { RecurringSchedule } from "@prisma/client";
+import type { Prisma, RecurringSchedule, RecurrenceFrequency } from "@prisma/client";
 
 const DEFAULT_HORIZON_DAYS = 90;
+
+/** Generation window for a schedule: the horizon is capped by its own endDate, and resumes from generatedUntil once anything has already been generated. */
+function resolveGenerationWindow(schedule: Pick<RecurringSchedule, "startDate" | "endDate" | "generatedUntil">, horizonDays: number): { from: Date; until: Date } {
+  const horizon = new Date();
+  horizon.setDate(horizon.getDate() + horizonDays);
+  const until = schedule.endDate && schedule.endDate < horizon ? schedule.endDate : horizon;
+  const from = schedule.generatedUntil ?? schedule.startDate;
+  return { from, until };
+}
 
 function daysInMonth(year: number, monthIndex: number): number {
   return new Date(year, monthIndex + 1, 0).getDate();
@@ -95,11 +104,7 @@ export async function generateAppointments(scheduleId: string, horizonDays = DEF
   const schedule = await prisma.recurringSchedule.findUniqueOrThrow({ where: { id: scheduleId } });
   if (!schedule.active) return { created: 0, generatedUntil: schedule.generatedUntil };
 
-  const horizon = new Date();
-  horizon.setDate(horizon.getDate() + horizonDays);
-  const until = schedule.endDate && schedule.endDate < horizon ? schedule.endDate : horizon;
-  const from = schedule.generatedUntil ?? schedule.startDate;
-
+  const { from, until } = resolveGenerationWindow(schedule, horizonDays);
   const occurrences = computeOccurrences(schedule, from, until);
   if (occurrences.length === 0) return { created: 0, generatedUntil: schedule.generatedUntil };
 
@@ -117,4 +122,118 @@ export async function generateAppointments(scheduleId: string, horizonDays = DEF
 
   await prisma.recurringSchedule.update({ where: { id: scheduleId }, data: { generatedUntil: until } });
   return { created: result.count, generatedUntil: until };
+}
+
+export type AttachRecurrenceParams = {
+  orderId: string;
+  branchId: string;
+  clientId: string;
+  serviceId: string;
+  frequency: RecurrenceFrequency;
+  interval: number;
+  dayOfWeek: number | null;
+  daysOfWeek: number[];
+  dayOfMonth: number | null;
+  startTime: string;
+  endTime: string;
+  price: number;
+  startDate: Date;
+  endDate: Date | null;
+  createdBy: string;
+};
+
+/**
+ * Turns an EXISTING ServiceOrder into a recurring one, in place - never
+ * creates a second order (see "Transformar em recorrencia",
+ * app/api/orders/[id]/transform-to-recurring). Must run inside the same
+ * transaction (`tx`) the caller uses for the rest of the operation, so a
+ * failure here never leaves a schedule without its appointments or vice
+ * versa (unlike generateAppointments above, which is called standalone by
+ * the plain "Nova Recorrencia" flow).
+ *
+ * The order's own pre-existing appointment(s) are never duplicated: any
+ * computed occurrence date that already has a non-cancelled, not-yet-linked
+ * appointment on this order is ADOPTED (linked to the new schedule) instead
+ * of getting a second row for the same date - this is what keeps the
+ * original atendimento intact per the feature's "preservar atendimento
+ * original" requirement. Only computeOccurrences (the pure date algorithm)
+ * is reused from generateAppointments' own logic; the DB orchestration here
+ * is intentionally separate because the adoption step has no equivalent in
+ * the plain "brand new schedule" path.
+ */
+export async function createRecurringScheduleForExistingOrder(
+  tx: Prisma.TransactionClient,
+  params: AttachRecurrenceParams,
+  horizonDays = DEFAULT_HORIZON_DAYS
+) {
+  const schedule = await tx.recurringSchedule.create({ data: params });
+  const { until } = resolveGenerationWindow(schedule, horizonDays);
+  const occurrences = computeOccurrences(schedule, schedule.startDate, until);
+
+  const existingAppointments = await tx.appointment.findMany({
+    where: { orderId: params.orderId, cancelledAt: null, recurringScheduleId: null },
+    select: { id: true, date: true },
+  });
+  const existingIdByDateKey = new Map(existingAppointments.map((a) => [a.date.toISOString().slice(0, 10), a.id]));
+
+  const adoptedIds: string[] = [];
+  const idToDate = new Map<string, Date>();
+  const datesToCreate: Date[] = [];
+  for (const date of occurrences) {
+    const existingId = existingIdByDateKey.get(date.toISOString().slice(0, 10));
+    if (existingId) {
+      adoptedIds.push(existingId);
+      idToDate.set(existingId, date);
+    } else {
+      datesToCreate.push(date);
+    }
+  }
+
+  let adopted = 0;
+  if (adoptedIds.length > 0) {
+    // Re-asserts cancelledAt/recurringScheduleId at WRITE time, not just at
+    // the findMany read above - a concurrent, non-transactional appointment
+    // mutation (cancel/reschedule/delete, e.g. app/api/appointments/[id])
+    // can land in between the two, and updateMany's WHERE id IN (...) alone
+    // would otherwise silently re-link a since-cancelled/moved appointment
+    // instead of catching the change.
+    const updateResult = await tx.appointment.updateMany({
+      where: { id: { in: adoptedIds }, cancelledAt: null, recurringScheduleId: null },
+      data: { recurringScheduleId: schedule.id },
+    });
+    adopted = updateResult.count;
+    if (adopted !== adoptedIds.length) {
+      // Some candidates changed under us - their date must not silently
+      // disappear from the recurrence, so it falls back to a fresh
+      // appointment instead (skipDuplicates below still protects against
+      // any date that a concurrent reschedule moved onto this exact day).
+      const actuallyAdopted = await tx.appointment.findMany({ where: { id: { in: adoptedIds }, recurringScheduleId: schedule.id }, select: { id: true } });
+      const actuallyAdoptedIds = new Set(actuallyAdopted.map((a) => a.id));
+      for (const id of adoptedIds) {
+        if (!actuallyAdoptedIds.has(id)) {
+          const date = idToDate.get(id);
+          if (date) datesToCreate.push(date);
+        }
+      }
+    }
+  }
+
+  let created = 0;
+  if (datesToCreate.length > 0) {
+    const result = await tx.appointment.createMany({
+      data: datesToCreate.map((date) => ({
+        orderId: params.orderId,
+        branchId: params.branchId,
+        date,
+        startTime: params.startTime,
+        endTime: params.endTime,
+        recurringScheduleId: schedule.id,
+      })),
+      skipDuplicates: true,
+    });
+    created = result.count;
+  }
+
+  await tx.recurringSchedule.update({ where: { id: schedule.id }, data: { generatedUntil: until } });
+  return { schedule, created, adopted };
 }

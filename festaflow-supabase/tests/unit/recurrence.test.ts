@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { computeOccurrences } from "@/lib/recurrence";
+import { computeOccurrences, createRecurringScheduleForExistingOrder, type AttachRecurrenceParams } from "@/lib/recurrence";
 import type { RecurringSchedule } from "@prisma/client";
 
 // Minimal fixture: computeOccurrences only ever reads frequency, daysOfWeek,
@@ -99,5 +99,142 @@ describe("computeOccurrences - monthly", () => {
     const s = schedule({ frequency: "monthly", dayOfMonth: null, startDate: new Date(2026, 2, 10) });
     const dates = computeOccurrences(s, new Date(2026, 2, 10), new Date(2026, 4, 1));
     expect(fmt(dates)).toEqual(["2026-03-10", "2026-04-10"]);
+  });
+});
+
+describe("createRecurringScheduleForExistingOrder", () => {
+  // `endDate` is always set in these fixtures (never left open-ended) so the
+  // generation window is capped by it instead of by "now + horizonDays" -
+  // computeOccurrences would otherwise depend on whatever date the test
+  // happens to run on, which is not deterministic.
+  function baseParams(overrides: Partial<AttachRecurrenceParams> = {}): AttachRecurrenceParams {
+    return {
+      orderId: "order-1",
+      branchId: "branch-1",
+      clientId: "client-1",
+      serviceId: "service-1",
+      frequency: "weekly",
+      interval: 1,
+      dayOfWeek: 1,
+      daysOfWeek: [1], // Monday
+      dayOfMonth: null,
+      startTime: "09:00",
+      endTime: "11:00",
+      price: 135,
+      startDate: new Date(2026, 0, 5), // Monday
+      endDate: new Date(2026, 0, 19), // 3rd Monday -> occurrences: 01-05, 01-12, 01-19
+      createdBy: "user-1",
+      ...overrides,
+    };
+  }
+
+  // Lightweight fake of the 4 Prisma calls the function actually makes -
+  // mirrors tests/unit/order-code.test.ts's own fakeClient pattern, avoiding
+  // a real database for logic that is purely about which methods get called
+  // with which arguments (the real-DB path is covered by the e2e suite).
+  //
+  // `racedIds`: candidate appointment ids that a concurrent, non-transactional
+  // mutation (cancel/reschedule/delete) is simulated to have changed AFTER the
+  // initial findMany read but BEFORE updateMany runs - updateMany's own
+  // cancelledAt/recurringScheduleId predicates (re-checked at write time, not
+  // just at the earlier read) must exclude these, exactly like the real
+  // Postgres WHERE clause would.
+  function fakeTx(existingAppointments: Array<{ id: string; date: Date }> = [], racedIds: Set<string> = new Set()) {
+    const calls = {
+      findManyCalls: [] as unknown[],
+      updateManyWhere: null as unknown,
+      createManyData: null as Array<{ date: Date }> | null,
+      updateData: null as Record<string, unknown> | null,
+    };
+    const linkedIds = new Set<string>();
+    const tx = {
+      recurringSchedule: {
+        create: async ({ data }: { data: AttachRecurrenceParams }) =>
+          ({ id: "schedule-1", ...data, generatedUntil: null, active: true, createdAt: new Date(), updatedAt: new Date() }) as unknown as RecurringSchedule,
+        update: async ({ data }: { data: Record<string, unknown> }) => {
+          calls.updateData = data;
+          return {} as RecurringSchedule;
+        },
+      },
+      appointment: {
+        findMany: async ({ where }: { where: { orderId?: string; id?: { in: string[] } } }) => {
+          calls.findManyCalls.push(where);
+          if (where.orderId) return existingAppointments; // initial adoption-candidate read
+          // Fallback verification query (only issued when updateMany's count
+          // came up short): { id: { in }, recurringScheduleId: schedule.id }.
+          const ids = where.id?.in ?? [];
+          return existingAppointments.filter((a) => ids.includes(a.id) && linkedIds.has(a.id)).map((a) => ({ id: a.id }));
+        },
+        updateMany: async ({ where }: { where: { id: { in: string[] }; cancelledAt: null; recurringScheduleId: null } }) => {
+          calls.updateManyWhere = where;
+          const matched = where.id.in.filter((id) => !racedIds.has(id));
+          matched.forEach((id) => linkedIds.add(id));
+          return { count: matched.length };
+        },
+        createMany: async ({ data }: { data: Array<{ date: Date }> }) => {
+          calls.createManyData = data;
+          return { count: data.length };
+        },
+      },
+    };
+    return { tx: tx as unknown as Parameters<typeof createRecurringScheduleForExistingOrder>[0], calls };
+  }
+
+  it("generates every occurrence as a new appointment when none pre-exist", async () => {
+    const { tx, calls } = fakeTx([]);
+    const result = await createRecurringScheduleForExistingOrder(tx, baseParams());
+    expect(result.created).toBe(3);
+    expect(result.adopted).toBe(0);
+    expect(calls.createManyData?.map((d) => d.date.toISOString().slice(0, 10))).toEqual(["2026-01-05", "2026-01-12", "2026-01-19"]);
+    expect(calls.updateManyWhere).toBeNull(); // nothing to adopt -> updateMany never called
+    expect(calls.findManyCalls).toEqual([{ orderId: "order-1", cancelledAt: null, recurringScheduleId: null }]);
+  });
+
+  it("adopts the OS's own pre-existing appointment instead of creating a duplicate for the same date", async () => {
+    const { tx, calls } = fakeTx([{ id: "appt-original", date: new Date(2026, 0, 5) }]);
+    const result = await createRecurringScheduleForExistingOrder(tx, baseParams());
+    expect(result.adopted).toBe(1);
+    expect(result.created).toBe(2); // only 01-12 and 01-19 are new
+    expect(calls.updateManyWhere).toEqual({ id: { in: ["appt-original"] }, cancelledAt: null, recurringScheduleId: null });
+    expect(calls.createManyData?.map((d) => d.date.toISOString().slice(0, 10))).toEqual(["2026-01-12", "2026-01-19"]);
+    expect(calls.findManyCalls).toHaveLength(1); // no fallback verification query needed - the update matched everything
+  });
+
+  it("adopts every occurrence and never calls createMany when all dates already have an appointment", async () => {
+    const { tx, calls } = fakeTx([
+      { id: "a1", date: new Date(2026, 0, 5) },
+      { id: "a2", date: new Date(2026, 0, 12) },
+      { id: "a3", date: new Date(2026, 0, 19) },
+    ]);
+    const result = await createRecurringScheduleForExistingOrder(tx, baseParams());
+    expect(result.adopted).toBe(3);
+    expect(result.created).toBe(0);
+    expect(calls.updateManyWhere).toEqual({ id: { in: ["a1", "a2", "a3"] }, cancelledAt: null, recurringScheduleId: null });
+    expect(calls.createManyData).toBeNull(); // createMany is skipped entirely, not called with an empty array
+  });
+
+  it("falls back to a fresh appointment (never silently drops the date) when a concurrent cancel/reschedule races the adoption", async () => {
+    // Simulates: findMany reads "appt-original" as a live adoption candidate,
+    // then (before updateMany runs) a concurrent, non-transactional request -
+    // e.g. POST /api/appointments/[id]/cancel - cancels it. updateMany's own
+    // cancelledAt:null predicate must exclude it, and the date must still get
+    // a brand-new appointment instead of vanishing from the recurrence.
+    const { tx, calls } = fakeTx([{ id: "appt-original", date: new Date(2026, 0, 5) }], new Set(["appt-original"]));
+    const result = await createRecurringScheduleForExistingOrder(tx, baseParams());
+    expect(result.adopted).toBe(0); // the race meant nothing was actually (successfully) adopted
+    expect(result.created).toBe(3); // 01-05 falls back to a fresh row alongside 01-12 and 01-19
+    // The fallback date is appended after the loop, so insertion order isn't
+    // guaranteed (and doesn't need to be - createMany has no ordering
+    // requirement, appointments are always read back sorted by date).
+    expect(calls.createManyData?.map((d) => d.date.toISOString().slice(0, 10)).sort()).toEqual(["2026-01-05", "2026-01-12", "2026-01-19"]);
+    // The fallback verification query ran because updateMany's count (0) fell short of the 1 candidate.
+    expect(calls.findManyCalls).toHaveLength(2);
+    expect(calls.findManyCalls[1]).toEqual({ id: { in: ["appt-original"] }, recurringScheduleId: "schedule-1" });
+  });
+
+  it("caps the generation window at the schedule's own endDate and records it as generatedUntil", async () => {
+    const { tx, calls } = fakeTx([]);
+    await createRecurringScheduleForExistingOrder(tx, baseParams());
+    expect((calls.updateData?.generatedUntil as Date).toISOString().slice(0, 10)).toBe("2026-01-19");
   });
 });

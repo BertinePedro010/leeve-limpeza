@@ -115,11 +115,11 @@ export function Text({ label, value, set }: { label: string; value: string; set:
 // Same boolean|string `error` convention as Input above. Always wrapped in a
 // single block element (message or not) so it keeps acting as exactly one
 // grid item wherever it's dropped directly into a CSS grid (see OrderFormModal).
-export function Select({ value, set, options, id, error }: { value: string; set: (v: string) => void; options: Array<[string, string] | string[]>; id?: string; error?: boolean | string }) {
+export function Select({ value, set, options, id, error, disabled }: { value: string; set: (v: string) => void; options: Array<[string, string] | string[]>; id?: string; error?: boolean | string; disabled?: boolean }) {
   const message = typeof error === "string" ? error : undefined;
   const hasError = !!error;
   const errorId = id && message ? `${id}-error` : undefined;
-  return <div className="grid gap-1"><select id={id} value={value} onChange={(e) => set(e.target.value)} aria-invalid={hasError || undefined} aria-describedby={errorId} className={`rounded-xl border p-3 text-sm ${hasError ? "border-rose-500 ring-1 ring-rose-500" : ""}`}>{options.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select>{message && <span id={errorId} role="alert" className="text-[11px] font-normal normal-case text-rose-600">{message}</span>}</div>;
+  return <div className="grid gap-1"><select id={id} value={value} onChange={(e) => set(e.target.value)} disabled={disabled} aria-invalid={hasError || undefined} aria-describedby={errorId} className={`rounded-xl border p-3 text-sm ${hasError ? "border-rose-500 ring-1 ring-rose-500" : ""} ${disabled ? "cursor-not-allowed bg-slate-100 text-slate-500" : ""}`}>{options.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select>{message && <span id={errorId} role="alert" className="text-[11px] font-normal normal-case text-rose-600">{message}</span>}</div>;
 }
 export function Save() {
   return <button className="rounded-xl bg-indigo-600 p-3 font-black text-white">Salvar</button>;

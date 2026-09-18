@@ -1,0 +1,11 @@
+-- Enforces at most one RecurringSchedule per ServiceOrder at the DB level.
+-- The app has always assumed this (order.recurringSchedules?.[0] in the
+-- PDF/print/client-summary code), but nothing enforced it in the schema
+-- until now - "Transformar em recorrencia" (app/api/orders/[id]/transform-
+-- to-recurring) is the first flow that can attach a RecurringSchedule to an
+-- order that already exists, so it is also the first flow where a race
+-- between two concurrent requests for the same order could otherwise insert
+-- two rows (the app-level COUNT-then-INSERT guard alone is not race-proof
+-- under Postgres's default ReadCommitted isolation). Purely additive: no
+-- column is dropped, renamed, or retyped, and no data is deleted.
+ALTER TABLE "recurring_schedules" ADD CONSTRAINT "recurring_schedules_order_id_key" UNIQUE ("order_id");
