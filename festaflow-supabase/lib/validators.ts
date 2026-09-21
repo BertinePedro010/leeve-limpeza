@@ -28,6 +28,24 @@ export const appointmentStatusEnum = z.enum(ORDER_STATUS_VALUES);
 export const appointmentCreateSchema = z.object({ orderId: z.string().uuid(), employeeId: z.string().uuid().optional().nullable(), dates: z.array(z.coerce.date()).min(1), startTime: z.string().min(1), endTime: z.string().min(1), notes: z.string().optional().nullable() });
 export const appointmentUpdateSchema = z.object({ employeeId: z.string().uuid().optional().nullable(), date: z.coerce.date().optional(), startTime: z.string().min(1).optional(), endTime: z.string().min(1).optional(), status: appointmentStatusEnum.optional(), notes: z.string().optional().nullable() });
 export const appointmentCancelSchema = z.object({ reason: z.string().min(3) });
+
+// Same pattern as orderValidationError/clientValidationError above - lets a
+// bad `date`/`startTime`/`endTime` in the reschedule-a-single-appointment
+// flow (components/SaasApp.tsx AppointmentRow) surface the specific message
+// from spec instead of the generic "Atendimento invalido.".
+const appointmentFieldMessages: Record<string, string> = {
+  date: "Informe uma data valida.",
+  startTime: "Informe um horario valido.",
+  endTime: "Informe um horario valido.",
+};
+
+export function appointmentValidationError(error: z.ZodError): { message: string; field?: string } {
+  const issue = error.issues[0];
+  const field = issue ? String(issue.path[0] ?? "") : "";
+  const message = appointmentFieldMessages[field];
+  if (message) return { message, field };
+  return { message: "Atendimento invalido." };
+}
 // Cancels the WHOLE OS (app/api/orders/[id]/cancel) - same shape as
 // appointmentCancelSchema, kept separate so the two endpoints' payloads can
 // diverge later without one silently affecting the other.

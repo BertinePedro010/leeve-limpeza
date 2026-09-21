@@ -630,9 +630,20 @@ function OrderFormModal({ order, orders, clients, employees, services, branchId,
     try { await api(`/api/appointments/${id}/complete`, { method: "POST" }); await reload(); }
     catch (err) { alert(err instanceof Error ? err.message : "Erro ao concluir atendimento."); }
   }
-  async function rescheduleAppointment(id: string, date: string, startTime: string, endTime: string) {
-    try { await api(`/api/appointments/${id}`, { method: "PUT", body: JSON.stringify({ date, startTime, endTime }) }); await reload(); }
-    catch (err) { alert(err instanceof Error ? err.message : "Erro ao reagendar atendimento."); }
+  // Returns whether it succeeded (not void, unlike its siblings below) so
+  // AppointmentRow's inline editor knows whether to close itself or stay
+  // open with the user's typed values after a rejected save (e.g. a
+  // recurring-schedule date conflict) - see lib/validators.ts appointmentValidationError.
+  async function rescheduleAppointment(id: string, date: string, startTime: string, endTime: string): Promise<boolean> {
+    try {
+      await api(`/api/appointments/${id}`, { method: "PUT", body: JSON.stringify({ date, startTime, endTime }) });
+      await reload();
+      setSuccess("Data do atendimento alterada com sucesso.");
+      return true;
+    } catch (err) {
+      alert(err instanceof Error ? err.message : "Nao foi possivel alterar a data do atendimento. Tente novamente.");
+      return false;
+    }
   }
   async function assignEmployee(id: string, employeeId: string) {
     try { await api(`/api/appointments/${id}`, { method: "PUT", body: JSON.stringify({ employeeId: employeeId || null }) }); await reload(); }
@@ -661,7 +672,7 @@ function OrderFormModal({ order, orders, clients, employees, services, branchId,
 // inherited from the OS (there is no per-appointment amount column - see the
 // Dashboard route). Actions act on that one appointment only, never creating
 // or duplicating an OS.
-function AppointmentsSection({ appointments, employees, orderTotal, serviceLabel, onCancel, onComplete, onReschedule, onAssign, onSetStatus, onRemove, onAdd }: { appointments: Appointment[]; employees: Employee[]; orderTotal: number; serviceLabel: string; onCancel: (id: string) => void; onComplete: (id: string) => void; onReschedule: (id: string, date: string, startTime: string, endTime: string) => void; onAssign: (id: string, employeeId: string) => void; onSetStatus: (id: string, status: string) => void; onRemove: (id: string) => void; onAdd: (dates: string[], startTime: string, endTime: string) => void }) {
+function AppointmentsSection({ appointments, employees, orderTotal, serviceLabel, onCancel, onComplete, onReschedule, onAssign, onSetStatus, onRemove, onAdd }: { appointments: Appointment[]; employees: Employee[]; orderTotal: number; serviceLabel: string; onCancel: (id: string) => void; onComplete: (id: string) => void; onReschedule: (id: string, date: string, startTime: string, endTime: string) => Promise<boolean>; onAssign: (id: string, employeeId: string) => void; onSetStatus: (id: string, status: string) => void; onRemove: (id: string) => void; onAdd: (dates: string[], startTime: string, endTime: string) => void }) {
   const [adding, setAdding] = useState(false);
   const [startTime, setStartTime] = useState("18:00");
   const [endTime, setEndTime] = useState("23:59");
@@ -679,17 +690,42 @@ function AppointmentsSection({ appointments, employees, orderTotal, serviceLabel
 
 const APPOINTMENT_STATUS_OPTIONS: Array<[string, string]> = ORDER_STATUS_VALUES.map((s) => [s, orderStatusLabels[s]]);
 
-function AppointmentRow({ appointment, employees, occurrenceValue, serviceLabel, canRemove, onCancel, onComplete, onReschedule, onAssign, onSetStatus, onRemove }: { appointment: Appointment; employees: Employee[]; occurrenceValue: number; serviceLabel: string; canRemove: boolean; onCancel: (id: string) => void; onComplete: (id: string) => void; onReschedule: (id: string, date: string, startTime: string, endTime: string) => void; onAssign: (id: string, employeeId: string) => void; onSetStatus: (id: string, status: string) => void; onRemove: (id: string) => void }) {
+// Shown before saving a date/time change to an already-"realizado"
+// atendimento (never for "agendado" - that path saves immediately, exactly
+// like before). Not a block, just a chance to back out of an accidental
+// edit - see PUT /api/appointments/[id] for why this is safe (status never
+// changes, financeiro is untouched, calendario/relatorios/dashboard all key
+// off Appointment.date so they simply reflect the corrected date).
+const RESCHEDULE_REALIZADO_CONFIRM = "Este atendimento ja foi realizado. Ao alterar a data, o historico e os relatorios poderao ser atualizados para a nova data. Deseja continuar?";
+
+function AppointmentRow({ appointment, employees, occurrenceValue, serviceLabel, canRemove, onCancel, onComplete, onReschedule, onAssign, onSetStatus, onRemove }: { appointment: Appointment; employees: Employee[]; occurrenceValue: number; serviceLabel: string; canRemove: boolean; onCancel: (id: string) => void; onComplete: (id: string) => void; onReschedule: (id: string, date: string, startTime: string, endTime: string) => Promise<boolean>; onAssign: (id: string, employeeId: string) => void; onSetStatus: (id: string, status: string) => void; onRemove: (id: string) => void }) {
   const [editingDate, setEditingDate] = useState(false);
   const [date, setDate] = useState(dateOnly(appointment.date));
   const [startTime, setStartTime] = useState(appointment.startTime);
   const [endTime, setEndTime] = useState(appointment.endTime);
-  const isFinal = appointment.status === "realizado" || !!appointment.cancelledAt;
+  const [savingDate, setSavingDate] = useState(false);
+  const isRealizado = appointment.status === "realizado";
+  const isFinal = isRealizado || !!appointment.cancelledAt;
+  // Cancellation is terminal (mirrors the backend guard in PUT
+  // /api/appointments/[id]) - a cancelled atendimento can never be
+  // rescheduled. Being "realizado" is NOT a reason to block this anymore:
+  // correcting the date of an already-completed atendimento is exactly the
+  // administrative-correction feature this row exists to offer. Every OTHER
+  // action below (funcionario, remover, marcar realizado, cancelar) still
+  // uses `isFinal` and stays blocked for realizado exactly like before.
+  const canReschedule = !appointment.cancelledAt;
+  async function saveDate() {
+    if (isRealizado && !confirm(RESCHEDULE_REALIZADO_CONFIRM)) return;
+    setSavingDate(true);
+    const succeeded = await onReschedule(appointment.id, date, startTime, endTime);
+    setSavingDate(false);
+    if (succeeded) setEditingDate(false);
+  }
   return <div className="rounded-xl border bg-white p-3">
     <div className="flex flex-wrap items-center justify-between gap-2">
       {editingDate
-        ? <div className="flex flex-wrap items-center gap-2"><input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="rounded border p-2 text-sm" /><input value={startTime} onChange={(e) => setStartTime(e.target.value)} className="w-20 rounded border p-2 text-sm" /><input value={endTime} onChange={(e) => setEndTime(e.target.value)} className="w-20 rounded border p-2 text-sm" /><button type="button" onClick={() => { onReschedule(appointment.id, date, startTime, endTime); setEditingDate(false); }} className="text-sm font-bold text-indigo-600">Salvar</button><button type="button" onClick={() => setEditingDate(false)} className="text-sm font-bold text-slate-500">Cancelar edicao</button></div>
-        : <button type="button" disabled={isFinal} onClick={() => setEditingDate(true)} className={`text-left text-sm font-bold ${isFinal ? "text-slate-400" : "text-slate-800 hover:text-indigo-600"}`}>{dateOnlyLabel(appointment.date)} - {appointment.startTime} as {appointment.endTime}{!isFinal && " (reagendar)"}</button>}
+        ? <div className="flex flex-wrap items-center gap-2"><input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="rounded border p-2 text-sm" /><input value={startTime} onChange={(e) => setStartTime(e.target.value)} className="w-20 rounded border p-2 text-sm" /><input value={endTime} onChange={(e) => setEndTime(e.target.value)} className="w-20 rounded border p-2 text-sm" /><button type="button" disabled={savingDate} onClick={saveDate} className="text-sm font-bold text-indigo-600 disabled:opacity-60">{savingDate ? "Salvando..." : "Salvar"}</button><button type="button" disabled={savingDate} onClick={() => setEditingDate(false)} className="text-sm font-bold text-slate-500 disabled:opacity-60">Cancelar edicao</button></div>
+        : <button type="button" disabled={!canReschedule} onClick={() => setEditingDate(true)} className={`text-left text-sm font-bold ${!canReschedule ? "text-slate-400" : "text-slate-800 hover:text-indigo-600"}`}>{dateOnlyLabel(appointment.date)} - {appointment.startTime} as {appointment.endTime}{canReschedule && " (reagendar)"}</button>}
       <Badge status={appointment.status} cancelledAt={appointment.cancelledAt} />
     </div>
     <p className="mt-1 text-xs text-slate-500">{serviceLabel} - <b className="text-slate-700">{money(occurrenceValue)}</b></p>

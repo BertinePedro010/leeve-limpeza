@@ -66,15 +66,16 @@ model Branch {
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  userBranches       UserBranch[]
-  clients            Client[]
-  employees          Employee[]
-  services           Service[]
-  orders             ServiceOrder[]
-  transactions       Transaction[]
-  appointments       Appointment[]
-  recurringSchedules RecurringSchedule[]
-  orderSendLogs      OrderSendLog[]
+  userBranches              UserBranch[]
+  clients                   Client[]
+  employees                 Employee[]
+  services                  Service[]
+  orders                    ServiceOrder[]
+  transactions              Transaction[]
+  appointments              Appointment[]
+  recurringSchedules        RecurringSchedule[]
+  orderSendLogs             OrderSendLog[]
+  appointmentRescheduleLogs AppointmentRescheduleLog[]
 
   @@map("branches")
 }
@@ -96,61 +97,62 @@ model UserBranch {
 }
 
 model Profile {
-  id        String    @id @db.Uuid
-  name      String    @db.VarChar(180)
-  email     String    @unique @db.VarChar(180)
-  role      UserRole  @default(operador)
+  id             String    @id @db.Uuid
+  name           String    @db.VarChar(180)
+  email          String    @unique @db.VarChar(180)
+  role           UserRole  @default(operador)
   // Module-level permission list (e.g. "clients", "finance", "reports") -
   // ignored entirely for role=admin (always full access). See requireModule()
   // in lib/authz.ts. "dashboard" and "branches" are never members of this
   // list: dashboard is always visible (with financial fields gated inline),
   // branches stays exclusive to requireGlobalAdmin as before.
   allowedModules String[]  @default([]) @map("allowed_modules")
-  avatarUrl String?   @map("avatar_url") @db.Text
-  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
-  deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
+  avatarUrl      String?   @map("avatar_url") @db.Text
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  deletedAt      DateTime? @map("deleted_at") @db.Timestamptz(6)
 
-  branches      UserBranch[]
-  createdOrders ServiceOrder[] @relation("ServiceOrderCreatedBy")
-  orderSendLogs OrderSendLog[]
+  branches                  UserBranch[]
+  createdOrders             ServiceOrder[]             @relation("ServiceOrderCreatedBy")
+  orderSendLogs             OrderSendLog[]
+  appointmentRescheduleLogs AppointmentRescheduleLog[]
 
   @@index([email], map: "idx_profiles_email")
   @@map("profiles")
 }
 
 model Client {
-  id                 String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  branchId           String              @map("branch_id") @db.Uuid
-  name               String              @db.VarChar(180)
-  email              String?             @db.VarChar(180)
-  phone              String?             @db.VarChar(40)
+  id                  String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  branchId            String              @map("branch_id") @db.Uuid
+  name                String              @db.VarChar(180)
+  email               String?             @db.VarChar(180)
+  phone               String?             @db.VarChar(40)
   // NOT globally unique: the same CPF/CNPJ may repeat for clients with
   // different names (e.g. a person and their company). Uniqueness is now
   // (branch_id, digits-only document, normalized name), enforced app-side in
   // app/api/clients (see lib/client-dedupe.ts) with a partial functional
   // unique index as a DB backstop - migration 20260908130000, not
   // expressible in the Prisma schema.
-  document           String?             @db.VarChar(40)
+  document            String?             @db.VarChar(40)
   // Legacy single-line address, kept for backward compatibility with clients
   // created before the structured fields below existed. New/edited clients
   // always compute this from those fields server-side (see lib/client-address.ts)
   // so anything still reading `address` directly (e.g. the OS PDF) keeps working.
-  address            String?             @db.Text
-  addressZip         String?             @map("address_zip") @db.VarChar(9)
-  addressStreet      String?             @map("address_street") @db.VarChar(200)
-  addressNumber      String?             @map("address_number") @db.VarChar(20)
-  addressNeighborhood String?            @map("address_neighborhood") @db.VarChar(120)
-  addressCity        String?             @map("address_city") @db.VarChar(120)
-  addressState       String?             @map("address_state") @db.VarChar(2)
-  addressReference   String?             @map("address_reference") @db.VarChar(200)
-  notes              String?             @db.Text
-  createdAt          DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt          DateTime            @updatedAt @map("updated_at") @db.Timestamptz(6)
-  deletedAt          DateTime?           @map("deleted_at") @db.Timestamptz(6)
-  branch             Branch              @relation(fields: [branchId], references: [id], onDelete: Restrict)
-  orders             ServiceOrder[]
-  recurringSchedules RecurringSchedule[]
+  address             String?             @db.Text
+  addressZip          String?             @map("address_zip") @db.VarChar(9)
+  addressStreet       String?             @map("address_street") @db.VarChar(200)
+  addressNumber       String?             @map("address_number") @db.VarChar(20)
+  addressNeighborhood String?             @map("address_neighborhood") @db.VarChar(120)
+  addressCity         String?             @map("address_city") @db.VarChar(120)
+  addressState        String?             @map("address_state") @db.VarChar(2)
+  addressReference    String?             @map("address_reference") @db.VarChar(200)
+  notes               String?             @db.Text
+  createdAt           DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt           DateTime            @updatedAt @map("updated_at") @db.Timestamptz(6)
+  deletedAt           DateTime?           @map("deleted_at") @db.Timestamptz(6)
+  branch              Branch              @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  orders              ServiceOrder[]
+  recurringSchedules  RecurringSchedule[]
 
   @@index([name], map: "idx_clients_name")
   @@index([email], map: "idx_clients_email")
@@ -205,59 +207,60 @@ model Service {
 }
 
 model ServiceOrder {
-  id                 String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  branchId           String              @map("branch_id") @db.Uuid
-  code               String              @unique @db.VarChar(40)
-  clientId           String              @map("client_id") @db.Uuid
-  eventDate          DateTime            @map("event_date") @db.Timestamptz(6)
-  startTime          String              @map("start_time") @db.VarChar(10)
-  endTime            String              @map("end_time") @db.VarChar(10)
+  id                  String                     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  branchId            String                     @map("branch_id") @db.Uuid
+  code                String                     @unique @db.VarChar(40)
+  clientId            String                     @map("client_id") @db.Uuid
+  eventDate           DateTime                   @map("event_date") @db.Timestamptz(6)
+  startTime           String                     @map("start_time") @db.VarChar(10)
+  endTime             String                     @map("end_time") @db.VarChar(10)
   // Legacy single-line address, kept NOT NULL for backward compatibility with
   // orders created before the structured address fields below existed. New
   // and edited orders always compute this from those fields server-side
   // (see lib/order-address.ts) so anything still reading `location` directly
   // (PDF/email fallback, WhatsApp) keeps working without modification.
-  location           String              @db.Text
-  addressZip         String?             @map("address_zip") @db.VarChar(9)
-  addressStreet      String?             @map("address_street") @db.VarChar(200)
-  addressNumber      String?             @map("address_number") @db.VarChar(20)
-  addressNeighborhood String?            @map("address_neighborhood") @db.VarChar(120)
-  addressCity        String?             @map("address_city") @db.VarChar(120)
-  addressState       String?             @map("address_state") @db.VarChar(2)
-  addressReference   String?             @map("address_reference") @db.VarChar(200)
-  status             OsStatus            @default(agendado)
+  location            String                     @db.Text
+  addressZip          String?                    @map("address_zip") @db.VarChar(9)
+  addressStreet       String?                    @map("address_street") @db.VarChar(200)
+  addressNumber       String?                    @map("address_number") @db.VarChar(20)
+  addressNeighborhood String?                    @map("address_neighborhood") @db.VarChar(120)
+  addressCity         String?                    @map("address_city") @db.VarChar(120)
+  addressState        String?                    @map("address_state") @db.VarChar(2)
+  addressReference    String?                    @map("address_reference") @db.VarChar(200)
+  status              OsStatus                   @default(agendado)
   // Cancellation is tracked here, separate from `status` (mirrors the same
   // 3 columns already on Appointment) - a cancelled OS keeps whatever
   // agendado/realizado status it last had; cancelledAt is what marks it
   // cancelled (see lib/order-status.ts). Set by the dedicated cancel action
   // (app/api/orders/[id]/cancel), never by the general edit PUT.
-  cancelledAt        DateTime?           @map("cancelled_at") @db.Timestamptz(6)
-  cancelledBy        String?             @map("cancelled_by") @db.Uuid
-  cancellationReason String?             @map("cancellation_reason") @db.Text
+  cancelledAt         DateTime?                  @map("cancelled_at") @db.Timestamptz(6)
+  cancelledBy         String?                    @map("cancelled_by") @db.Uuid
+  cancellationReason  String?                    @map("cancellation_reason") @db.Text
   // Free-text field kept exactly as-is for legacy records (e.g. "Pix 50/50",
   // "Faturamento 30 dias") that a controlled enum cannot represent losslessly.
   // New/edited orders always write `paymentMethod` (the enum) instead; this
   // field is never written to anymore, only ever read for display.
-  paymentMethodLegacy String?            @map("payment_method") @db.VarChar(160)
-  paymentMethod      PaymentMethod?      @map("payment_method_new")
-  notes              String?             @db.Text
-  signatureName      String?             @map("signature_name") @db.VarChar(180)
-  signatureDate      DateTime?           @map("signature_date") @db.Timestamptz(6)
-  totalAmount        Decimal             @default(0) @map("total_amount") @db.Decimal(10, 2)
-  createdBy          String?             @map("created_by") @db.Uuid
-  createdAt          DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt          DateTime            @updatedAt @map("updated_at") @db.Timestamptz(6)
-  deletedAt          DateTime?           @map("deleted_at") @db.Timestamptz(6)
-  branch             Branch              @relation(fields: [branchId], references: [id], onDelete: Restrict)
-  client             Client              @relation(fields: [clientId], references: [id], onDelete: Restrict)
-  createdByProfile   Profile?            @relation("ServiceOrderCreatedBy", fields: [createdBy], references: [id], onDelete: SetNull)
-  items              ServiceOrderItem[]
-  employees          OrderEmployee[]
-  attachments        Attachment[]
-  transactions       Transaction[]
-  appointments       Appointment[]
-  recurringSchedules RecurringSchedule[]
-  sendLogs           OrderSendLog[]
+  paymentMethodLegacy String?                    @map("payment_method") @db.VarChar(160)
+  paymentMethod       PaymentMethod?             @map("payment_method_new")
+  notes               String?                    @db.Text
+  signatureName       String?                    @map("signature_name") @db.VarChar(180)
+  signatureDate       DateTime?                  @map("signature_date") @db.Timestamptz(6)
+  totalAmount         Decimal                    @default(0) @map("total_amount") @db.Decimal(10, 2)
+  createdBy           String?                    @map("created_by") @db.Uuid
+  createdAt           DateTime                   @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt           DateTime                   @updatedAt @map("updated_at") @db.Timestamptz(6)
+  deletedAt           DateTime?                  @map("deleted_at") @db.Timestamptz(6)
+  branch              Branch                     @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  client              Client                     @relation(fields: [clientId], references: [id], onDelete: Restrict)
+  createdByProfile    Profile?                   @relation("ServiceOrderCreatedBy", fields: [createdBy], references: [id], onDelete: SetNull)
+  items               ServiceOrderItem[]
+  employees           OrderEmployee[]
+  attachments         Attachment[]
+  transactions        Transaction[]
+  appointments        Appointment[]
+  recurringSchedules  RecurringSchedule[]
+  sendLogs            OrderSendLog[]
+  rescheduleLogs      AppointmentRescheduleLog[]
 
   @@index([clientId], map: "idx_service_orders_client_id")
   @@index([eventDate], map: "idx_service_orders_event_date")
@@ -372,10 +375,11 @@ model Appointment {
   createdAt           DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt           DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  order             ServiceOrder       @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  branch            Branch             @relation(fields: [branchId], references: [id], onDelete: Restrict)
-  employee          Employee?          @relation(fields: [employeeId], references: [id], onDelete: SetNull)
-  recurringSchedule RecurringSchedule? @relation(fields: [recurringScheduleId], references: [id], onDelete: SetNull)
+  order             ServiceOrder               @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  branch            Branch                     @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  employee          Employee?                  @relation(fields: [employeeId], references: [id], onDelete: SetNull)
+  recurringSchedule RecurringSchedule?         @relation(fields: [recurringScheduleId], references: [id], onDelete: SetNull)
+  rescheduleLogs    AppointmentRescheduleLog[]
 
   @@unique([recurringScheduleId, date], map: "uq_appointments_recurring_date")
   @@index([branchId, date], map: "idx_appointments_branch_date")
@@ -468,4 +472,39 @@ model OrderSendLog {
   @@index([orderId], map: "idx_order_send_logs_order_id")
   @@index([branchId], map: "idx_order_send_logs_branch_id")
   @@map("order_send_logs")
+}
+
+// Minimal, append-only audit trail for administrative date/time corrections
+// made to an appointment via PUT /api/appointments/[id] - written ONLY when
+// date/startTime/endTime actually change (never for a plain employeeId/status
+// update through the same endpoint). Modeled directly after OrderSendLog
+// (same never-updated, never-deleted, branch-scoped style): who changed it,
+// what the appointment's status was at the time (so a correction made after
+// "realizado" is distinguishable from one made while still "agendado"), and
+// the before/after date+time. Never stores free-text reasons or anything
+// beyond these facts - this is not a general-purpose audit log.
+model AppointmentRescheduleLog {
+  id                String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  appointmentId     String   @map("appointment_id") @db.Uuid
+  orderId           String   @map("order_id") @db.Uuid
+  branchId          String   @map("branch_id") @db.Uuid
+  changedBy         String?  @map("changed_by") @db.Uuid
+  statusAtChange    OsStatus @map("status_at_change")
+  previousDate      DateTime @map("previous_date") @db.Date
+  newDate           DateTime @map("new_date") @db.Date
+  previousStartTime String   @map("previous_start_time") @db.VarChar(10)
+  newStartTime      String   @map("new_start_time") @db.VarChar(10)
+  previousEndTime   String   @map("previous_end_time") @db.VarChar(10)
+  newEndTime        String   @map("new_end_time") @db.VarChar(10)
+  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  appointment      Appointment  @relation(fields: [appointmentId], references: [id], onDelete: Cascade)
+  order            ServiceOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  branch           Branch       @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  changedByProfile Profile?     @relation(fields: [changedBy], references: [id], onDelete: SetNull)
+
+  @@index([appointmentId], map: "idx_appointment_reschedule_logs_appointment_id")
+  @@index([orderId], map: "idx_appointment_reschedule_logs_order_id")
+  @@index([branchId], map: "idx_appointment_reschedule_logs_branch_id")
+  @@map("appointment_reschedule_logs")
 }
