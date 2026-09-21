@@ -144,6 +144,7 @@ export const TRAINING_MODULES: TrainingModule[] = [
       "Uma OS pode ter VARIOS atendimentos/datas para o mesmo servico - nao e preciso criar uma OS nova para cada data (veja o modulo Atendimentos e datas adicionais).",
       "A forma de pagamento pode ser: Nao informado, PIX, Cartao de credito, Cartao de debito, Dinheiro ou Boleto.",
       "Cancelar uma OS e uma acao separada (botao 'Cancelar OS'), nao um status - veja o modulo Status.",
+      "Uma OS ja criada pode virar recorrencia a qualquer momento - use o botao na coluna Acoes (veja o modulo Recorrencia).",
     ],
     eviteEsteErro: ["Nao crie uma OS separada para cada data do mesmo servico/cliente - use 'Datas adicionais' dentro da mesma OS."],
   }),
@@ -199,12 +200,37 @@ export const TRAINING_MODULES: TrainingModule[] = [
     id: "recurrence",
     icon: "🔁",
     title: "Recorrencia",
-    summary: "Gera automaticamente os atendimentos de um servico que se repete.",
-    paraQueServe: ["Util para servicos que se repetem, como uma limpeza toda semana ou todo mes."],
-    comoFazer: ["Escolha o cliente, o servico, a frequencia (semanal ou mensal) e o dia."],
+    summary: "Gera automaticamente os atendimentos de um servico que se repete - do zero ou a partir de uma OS ja existente.",
+    paraQueServe: [
+      "Util para servicos que se repetem, como uma limpeza toda semana ou todo mes.",
+      "Existem duas portas de entrada: criar uma recorrencia nova do zero, ou transformar uma OS que ja existe em recorrencia (sem recadastrar nada).",
+    ],
+    comoFazer: [
+      "Criar do zero: use o botao 'Nova Recorrencia' na tela de Ordens de Servico e escolha o cliente, o servico, a frequencia (semanal, quinzenal ou mensal) e o dia.",
+      "A partir de uma OS ja existente: na lista de Ordens de Servico, cada OS sem recorrencia ainda vinculada mostra um botao na coluna Acoes, cujo nome muda de acordo com o status da OS.",
+    ],
+    passoAPasso: [
+      "OS com status Agendado -> aparece 'Transformar em recorrencia'. Ele anexa a recorrencia NA PROPRIA OS: o atendimento que ja existe naquela data e reaproveitado (nao duplicado), e os proximos atendimentos passam a ser gerados a partir dai.",
+      "OS com status Realizado -> aparece 'Criar recorrencia a partir desta OS'. Ele cria uma OS NOVA, separada, usando os dados da OS realizada como modelo (cliente, servicos, valor, horario, funcionarios) - a OS original, ja concluida, nunca e alterada.",
+      "Nos dois casos, o formulario de recorrencia abre ja preenchido com os dados da OS de origem - confira e ajuste o que precisar antes de salvar.",
+      "Em 'Transformar em recorrencia', o cliente fica travado e o servico so pode ser escolhido entre os que ja estao contratados naquela OS - porque a recorrencia esta sendo anexada aquela mesma OS, nao criando uma nova.",
+      "Em 'Criar recorrencia a partir desta OS', cliente e servico podem ser trocados livremente, pois uma OS nova e independente esta sendo criada.",
+      "Ao confirmar 'Transformar em recorrencia', o sistema pede uma confirmacao extra antes de efetivar, ja que a acao anexa a recorrencia permanentemente aquela OS.",
+    ],
+    exemplo: [
+      "OS Agendada de faxina toda terca para o cliente Joao -> clique em 'Transformar em recorrencia' (o dia e a frequencia ja vem sugeridos a partir da propria OS), confirme -> a terca que ja estava agendada continua sendo a mesma, e as proximas tercas passam a ser geradas sozinhas.",
+      "OS Realizada de dedetizacao mensal para a cliente Ana -> clique em 'Criar recorrencia a partir desta OS' -> uma OS nova e criada com os mesmos dados de Ana, e essa OS nova passa a se repetir todo mes; a OS antiga de Ana permanece intacta no historico.",
+    ],
     importante: [
+      "Se a OS ja tiver uma recorrencia vinculada, nenhum botao aparece - so o aviso 'Recorrencia configurada'. Nao e possivel anexar duas recorrencias na mesma OS.",
+      "OS cancelada nao mostra nenhum dos dois botoes.",
       "O sistema gera os atendimentos com ate 90 dias de antecedencia.",
-      "Da para adicionar datas avulsas extras junto com a recorrencia.",
+      "Da para adicionar datas avulsas extras junto com a recorrencia, no mesmo formulario.",
+      "O 'Valor mensal' da recorrencia e o total cobrado por mes - nao e o valor de cada atendimento avulso.",
+    ],
+    eviteEsteErro: [
+      "Nao cadastre uma OS nova do zero so para repetir o mesmo servico do mesmo cliente - se a OS ja existe, use um dos dois botoes de recorrencia em vez de digitar tudo de novo.",
+      "Em 'Transformar em recorrencia', nao tente trocar o cliente ou escolher um servico que a OS nao tem contratado - esses campos ficam limitados de proposito, porque a recorrencia esta sendo anexada aquela OS especifica.",
     ],
   }),
 
@@ -366,6 +392,7 @@ export const TRAINING_MODULES: TrainingModule[] = [
       { q: "Como pesquisar cliente por CPF/CNPJ?", a: "Na tela Clientes, digite o CPF ou CNPJ na pesquisa, com ou sem pontuacao - o sistema encontra do mesmo jeito." },
       { q: "Como enviar uma OS?", a: "Abra a OS e use os botoes 'Enviar por e-mail' ou 'Enviar pelo WhatsApp'." },
       { q: "O que significa 'Cancelado', se nao e um status?", a: "Cancelar uma OS ou atendimento guarda o motivo e a data do cancelamento como historico, mas nao e um dos dois status possiveis (Agendado/Realizado) - veja o modulo Status." },
+      { q: "Como transformar uma OS ja criada em recorrencia?", a: "Na tela Ordens de Servico, se a OS estiver Agendada, clique em 'Transformar em recorrencia' - isso anexa a recorrencia na mesma OS, sem duplicar o atendimento que ja existe. Se a OS ja estiver Realizada, clique em 'Criar recorrencia a partir desta OS' - isso cria uma OS nova usando os dados dela como modelo, sem alterar a OS original. Veja o modulo Recorrencia para os detalhes de cada modo." },
     ],
   }),
 ];
