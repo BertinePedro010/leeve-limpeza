@@ -1,3 +1,4 @@
+import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { requireAuth, requireModule, assertRecordBranchAccess, assertBranchAccess, AuthzError, handleAuthzError } from "@/lib/authz";
 import { orderSchema, orderValidationError } from "@/lib/validators";
@@ -8,6 +9,10 @@ import { orderRealTotal } from "@/lib/order-total";
 
 function total(items: Array<{ quantity: number; unitPrice: number }>) {
   return items.reduce((sum, item) => sum + item.quantity * Number(item.unitPrice), 0);
+}
+
+function dateKey(d: Date): string {
+  return d.toISOString().slice(0, 10);
 }
 
 // See app/api/orders' own copy of this helper for the full rationale - same
@@ -125,16 +130,60 @@ export async function PUT(request: Request, { params }: { params: Promise<{ id: 
           employees: { create: employeeIds.map((employeeId) => ({ employeeId })) },
         },
       });
-      // OS status was deliberately changed in this edit - reflect it on the
-      // "principal" occurrence (the appointment on the OS event date), unless
-      // that occurrence is already realizado or was individually cancelled.
-      // Additional occurrences keep whatever status they were individually
-      // set to. Never a bulk rewrite of every appointment. Whole-OS
-      // cancellation is a separate action (app/api/orders/[id]/cancel) -
-      // "cancelado" is not a status value this PUT can ever receive.
-      // Must run BEFORE the final read below, otherwise the returned
-      // order.appointments would be a stale snapshot from before this update.
-      if (existing.status !== body.status) {
+      // The "principal" occurrence is the appointment sitting on the OS's OWN
+      // event date - same convention PUT /api/appointments/[id] uses in the
+      // reverse direction. Resolved by the OS's date BEFORE this save (never
+      // the just-submitted one), so it is found correctly even when the date
+      // itself is what changed in this edit. A cancelled principal is left
+      // alone (cancellation is terminal) - every other field on the OS still
+      // saves normally, this just silently skips syncing that one occurrence.
+      const principal = await tx.appointment.findFirst({ where: { orderId: id, date: existing.eventDate, cancelledAt: null } });
+      const dateOrTimeChanged = dateKey(body.eventDate) !== dateKey(existing.eventDate) || body.startTime !== existing.startTime || body.endTime !== existing.endTime;
+
+      // Corrects a real bug: editing the "Data"/"Inicio"/"Fim" fields on this
+      // form used to update ONLY service_orders.event_date/start_time/end_time
+      // - the linked Appointment row (the actual source of truth for the
+      // Calendario, Relatorios, PDF, e-mail/WhatsApp - see PUT
+      // /api/appointments/[id] for the full audit) never moved, so nothing
+      // outside the OS list itself ever reflected the change. Mirrors that
+      // same endpoint: moves the principal occurrence in the same
+      // transaction and writes the same minimal audit row - one rule, not a
+      // second implementation for this screen.
+      if (principal && dateOrTimeChanged) {
+        const rescheduled = await tx.appointment.update({
+          where: { id: principal.id },
+          data: {
+            date: body.eventDate,
+            startTime: body.startTime,
+            endTime: body.endTime,
+            // Status sync (see below) is folded in here too when both change
+            // in the same save, instead of a second query that would no
+            // longer find this occurrence by its (now stale) old date.
+            ...(existing.status !== body.status && principal.status !== "realizado" ? { status: body.status } : {}),
+          },
+        });
+        await tx.appointmentRescheduleLog.create({
+          data: {
+            appointmentId: principal.id,
+            orderId: id,
+            branchId,
+            changedBy: auth.userId,
+            statusAtChange: principal.status,
+            previousDate: principal.date,
+            newDate: rescheduled.date,
+            previousStartTime: principal.startTime,
+            newStartTime: rescheduled.startTime,
+            previousEndTime: principal.endTime,
+            newEndTime: rescheduled.endTime,
+          },
+        });
+      } else if (existing.status !== body.status) {
+        // OS status changed but the date/time did not - exact prior
+        // behavior, unaffected by the block above. Additional occurrences
+        // keep whatever status they were individually set to. Never a bulk
+        // rewrite of every appointment. Whole-OS cancellation is a separate
+        // action (app/api/orders/[id]/cancel) - "cancelado" is not a status
+        // value this PUT can ever receive.
         await tx.appointment.updateMany({
           where: { orderId: id, date: body.eventDate, status: { not: "realizado" }, cancelledAt: null },
           data: { status: body.status },
@@ -152,6 +201,14 @@ export async function PUT(request: Request, { params }: { params: Promise<{ id: 
     }, { timeout: 15000 });
     return ok(serialize(withRealTotal(data)));
   } catch (error) {
+    // Same pre-existing conflict rule PUT /api/appointments/[id] reuses: two
+    // occurrences of the SAME recurring schedule can never share a date
+    // (@@unique([recurringScheduleId, date])). Only reachable here if the
+    // principal occurrence belongs to a recurrence and the new OS date
+    // collides with a sibling occurrence.
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+      return fail("Ja existe um atendimento desta recorrencia nesta data. Escolha outra data.", 422, "eventDate");
+    }
     return handleAuthzError(error);
   }
 }

@@ -333,3 +333,87 @@ test.describe("Corrigir data/horario de um atendimento (PUT /api/appointments/:i
     await ctx.dispose();
   });
 });
+
+// Regression coverage for the actual bug report: editing the top-level
+// "Data"/"Inicio"/"Fim" fields on the OS edit form (PUT /api/orders/:id) used
+// to update ONLY service_orders.event_date/start_time/end_time - the linked
+// Appointment row (Calendario/Relatorios/PDF/e-mail/WhatsApp's real source of
+// truth) never moved, so nothing outside the OS list itself ever reflected
+// the change. Fixed by syncing the OS's principal occurrence in the same
+// transaction, mirroring PUT /api/appointments/[id]'s own sync in reverse.
+test.describe("Editar a Data/Horario pelo formulario da OS (PUT /api/orders/:id) tambem move o atendimento", () => {
+  let branchAId: string;
+
+  test.beforeAll(async () => {
+    branchAId = (await prisma.branch.findUniqueOrThrow({ where: { name: "Filial Teste Norte" } })).id;
+  });
+
+  test.afterAll(async () => prisma.$disconnect());
+
+  function orderEditPayload(fx: Fixture, overrides: Record<string, unknown>) {
+    return { clientId: fx.client.id, eventDate: fx.order.eventDate, startTime: fx.order.startTime, endTime: fx.order.endTime, status: "agendado", employeeIds: [fx.employee.id], items: [{ serviceId: fx.service.id, quantity: 1, unitPrice: 200 }], ...overrides };
+  }
+
+  test("OS avulsa: editar a Data no formulario da OS move o unico atendimento junto - nao fica so no nivel da OS", async () => {
+    const oldDate = utcDate(150);
+    const fx = await createOrder(branchAId, { dates: [oldDate] });
+    const ctx = await newContext();
+    const newDate = ymd(utcDate(155));
+
+    const res = await ctx.put(`/api/orders/${fx.order.id}`, { data: orderEditPayload(fx, { eventDate: newDate, startTime: "13:00", endTime: "15:00" }) });
+    expect(res.ok()).toBe(true);
+    const body = await res.json();
+    expect(body.eventDate.slice(0, 10)).toBe(newDate);
+    expect(body.appointments).toHaveLength(1); // never duplicated
+    expect(body.appointments[0].date.slice(0, 10)).toBe(newDate); // the actual bug: this used to stay at oldDate
+    expect(body.appointments[0].startTime).toBe("13:00");
+    expect(body.appointments[0].endTime).toBe("15:00");
+
+    // Reflected in the Calendario's own query too (Appointment.date, branch+range) - not just the OS response.
+    const calendar = await ctx.get(`/api/calendar?branchId=${branchAId}&from=${newDate}&to=${newDate}`).then((r) => r.json());
+    expect(calendar.some((a: { orderId: string }) => a.orderId === fx.order.id)).toBe(true);
+
+    await ctx.dispose();
+  });
+
+  test("OS com multiplos atendimentos: editar a Data da OS move so o atendimento PRINCIPAL (o que estava na data antiga da OS) - os demais ficam intactos", async () => {
+    const d0 = utcDate(160), d1 = utcDate(162), d2 = utcDate(164);
+    const fx = await createOrder(branchAId, { dates: [d0, d1, d2] });
+    const ctx = await newContext();
+    const newDate = ymd(utcDate(170));
+
+    const res = await ctx.put(`/api/orders/${fx.order.id}`, { data: orderEditPayload(fx, { eventDate: newDate }) });
+    expect(res.ok()).toBe(true);
+    const body = await res.json();
+    expect(body.appointments).toHaveLength(3); // never duplicated
+
+    const principal = body.appointments.find((a: { date: string }) => a.date.slice(0, 10) === newDate);
+    expect(principal).toBeTruthy();
+    const others = body.appointments.filter((a: { id: string }) => a.id !== principal.id).map((a: { date: string }) => a.date.slice(0, 10));
+    expect(new Set(others)).toEqual(new Set([ymd(d1), ymd(d2)])); // siblings never move
+
+    await ctx.dispose();
+  });
+
+  test("Mudar status E data no mesmo salvamento da OS: os dois se aplicam ao atendimento principal, com um unico registro de auditoria", async () => {
+    const oldDate = utcDate(180);
+    const fx = await createOrder(branchAId, { dates: [oldDate] });
+    const ctx = await newContext();
+    const before = await getOrder(ctx, fx.order.id);
+    const apptId = before.appointments[0].id;
+    const newDate = ymd(utcDate(185));
+
+    const res = await ctx.put(`/api/orders/${fx.order.id}`, { data: orderEditPayload(fx, { eventDate: newDate, status: "realizado" }) });
+    expect(res.ok()).toBe(true);
+    const body = await res.json();
+    expect(body.status).toBe("realizado");
+    expect(body.appointments[0].date.slice(0, 10)).toBe(newDate);
+    expect(body.appointments[0].status).toBe("realizado");
+
+    const logs = await prisma.appointmentRescheduleLog.findMany({ where: { appointmentId: apptId } });
+    expect(logs).toHaveLength(1); // one write, not two separate updates racing each other
+    expect(logs[0].newDate.toISOString().slice(0, 10)).toBe(newDate);
+
+    await ctx.dispose();
+  });
+});
