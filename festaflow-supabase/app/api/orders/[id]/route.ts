@@ -19,9 +19,9 @@ function dateKey(d: Date): string {
 // rule, same shape, duplicated only because these two routes' `include()`
 // return slightly different Prisma payload types and a shared generic would
 // add more indirection than the four lines it saves.
-function withRealTotal<T extends { totalAmount: unknown; _count: { appointments: number } }>(order: T): Omit<T, "_count"> & { total: number } {
-  const { _count, ...rest } = order;
-  return { ...rest, total: orderRealTotal(order.totalAmount as number | string, _count.appointments) };
+function withRealTotal<T extends { totalAmount: unknown; appointments: Array<{ cancelledAt: unknown; priceOverride: unknown }> }>(order: T): T & { total: number } {
+  const nonCancelled = order.appointments.filter((a) => !a.cancelledAt) as Array<{ priceOverride: number | string | null }>;
+  return { ...order, total: orderRealTotal(order.totalAmount as number | string, nonCancelled) };
 }
 
 // `transactions` (real amounts/status/payment method) is exactly what the
@@ -35,7 +35,7 @@ function withRealTotal<T extends { totalAmount: unknown; _count: { appointments:
 // PrintOrder can be opened from a single order fetched here too, and must
 // show the same "Recorrencia" section from the same source either way.
 function include(canViewFinance: boolean) {
-  return { client: true, branch: { select: { id: true, name: true, city: true } }, items: { include: { service: true } }, employees: { include: { employee: true } }, transactions: canViewFinance, appointments: { include: { employee: { select: { id: true, name: true } } }, orderBy: [{ date: "asc" as const }, { startTime: "asc" as const }] }, recurringSchedules: { select: { id: true, frequency: true, interval: true, dayOfWeek: true, daysOfWeek: true, dayOfMonth: true, startDate: true, endDate: true, active: true, price: true } }, _count: { select: { appointments: { where: { cancelledAt: null } } } } };
+  return { client: true, branch: { select: { id: true, name: true, city: true } }, items: { include: { service: true } }, employees: { include: { employee: true } }, transactions: canViewFinance, appointments: { include: { employee: { select: { id: true, name: true } } }, orderBy: [{ date: "asc" as const }, { startTime: "asc" as const }] }, recurringSchedules: { select: { id: true, serviceId: true, frequency: true, interval: true, dayOfWeek: true, daysOfWeek: true, dayOfMonth: true, startDate: true, endDate: true, active: true, price: true } } };
 }
 
 // Used by the calendar (click an appointment -> load its full order) and by

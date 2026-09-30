@@ -23,7 +23,14 @@ import { fail, ok, serialize } from "@/lib/json";
 // one value contribution, grouped) from "per appointment status" to "per
 // client + service". No parallel financial logic: still ultimately
 // item.quantity * item.unitPrice, the exact figures ServiceOrder.totalAmount
-// itself is built from (see app/api/orders' own total()).
+// itself is built from (see app/api/orders' own total()) - UNLESS a matching
+// appointment has its own price_override (see prisma/schema.prisma
+// Appointment.priceOverride), in which case its contribution to this item
+// line is that appointment's override, prorated by this item's share of the
+// order's totalAmount (soi.unit_price*soi.quantity / so.total_amount) - so a
+// single-item OS (the common recurring case) contributes the override
+// verbatim, and a multi-item OS still splits an override consistently
+// across its lines instead of crashing or double-counting.
 //
 // OS-level Agendado/Realizado counts are a SEPARATE query, unchanged from
 // before: an OS is counted once regardless of its number of service lines
@@ -60,13 +67,19 @@ export async function GET(request: Request) {
       item_quantity: number;
       unit_price: number;
       matching_appt_count: number;
+      matching_value: number;
     }>>(Prisma.sql`
       SELECT so.client_id,
              c.name AS client_name,
              s.name AS service_name,
              soi.quantity AS item_quantity,
              soi.unit_price::float8 AS unit_price,
-             COUNT(a.id)::int AS matching_appt_count
+             COUNT(a.id)::int AS matching_appt_count,
+             SUM(
+               CASE WHEN so.total_amount = 0 THEN 0
+               ELSE (soi.unit_price * soi.quantity / so.total_amount) * COALESCE(a.price_override, so.total_amount)
+               END
+             )::float8 AS matching_value
       FROM service_orders so
       JOIN clients c ON c.id = so.client_id
       JOIN service_order_items soi ON soi.order_id = so.id
@@ -80,7 +93,7 @@ export async function GET(request: Request) {
         AND s.branch_id = ANY(ARRAY[${Prisma.join(branchIds)}]::uuid[])
         ${serviceId ? Prisma.sql`AND s.id = ${serviceId}::uuid` : Prisma.empty}
         ${clientId ? Prisma.sql`AND so.client_id = ${clientId}::uuid` : Prisma.empty}
-      GROUP BY so.id, so.client_id, c.name, s.id, s.name, soi.quantity, soi.unit_price
+      GROUP BY so.id, so.client_id, c.name, s.id, s.name, soi.quantity, soi.unit_price, so.total_amount
     `);
 
     const orders = branchIds.length === 0 ? [] : await prisma.serviceOrder.findMany({
@@ -116,9 +129,11 @@ export async function GET(request: Request) {
         byClient.set(row.client_id, entry);
       }
       const line = entry.services.get(row.service_name) ?? { quantity: 0, value: 0 };
-      const occurrenceQuantity = Number(row.item_quantity) * Number(row.matching_appt_count);
-      line.quantity += occurrenceQuantity;
-      line.value += occurrenceQuantity * Number(row.unit_price);
+      // Quantity is unaffected by price_override (a value override, not a
+      // quantity one) - only `value` reads matching_value, which is already
+      // override-aware (see the query above).
+      line.quantity += Number(row.item_quantity) * Number(row.matching_appt_count);
+      line.value += Number(row.matching_value);
       entry.services.set(row.service_name, line);
     }
 

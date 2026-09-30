@@ -33,7 +33,7 @@ export async function GET(request: Request) {
         include: {
           client: { select: { name: true } },
           branch: { select: { name: true } },
-          appointments: { select: { status: true, cancelledAt: true } },
+          appointments: { select: { status: true, cancelledAt: true, priceOverride: true } },
         },
         orderBy: { createdAt: "desc" },
       }),
@@ -46,19 +46,19 @@ export async function GET(request: Request) {
     ]);
 
     const data = orders.map((o) => {
-      const nonCancelledCount = o.appointments.filter((a) => !a.cancelledAt).length;
+      const nonCancelled = o.appointments.filter((a) => !a.cancelledAt);
       return {
         code: o.code,
         client: o.client.name,
         branch: o.branch.name,
         status: o.status,
-        appointmentCount: nonCancelledCount,
+        appointmentCount: nonCancelled.length,
         totalAmount: o.totalAmount,
         // Real total across every occurrence this OS actually has - see
-        // lib/order-total.ts. Distinct from totalAmount (the value of a
-        // single occurrence), same rule the OS listing's own "Total" column
-        // and the client-search summary use.
-        total: orderRealTotal(o.totalAmount, nonCancelledCount),
+        // lib/order-total.ts (override-aware). Distinct from totalAmount
+        // (the value of a single occurrence with no override), same rule the
+        // OS listing's own "Total" column and the client-search summary use.
+        total: orderRealTotal(o.totalAmount, nonCancelled),
         paymentMethod: o.paymentMethod,
         paymentMethodLegacy: o.paymentMethodLegacy,
         createdAt: o.createdAt,

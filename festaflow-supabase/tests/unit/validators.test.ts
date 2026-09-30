@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { clientSchema, orderSchema, transactionSchema, recurringScheduleSchema, orderItemSchema, orderValidationError, clientValidationError } from "@/lib/validators";
+import { clientSchema, orderSchema, transactionSchema, recurringScheduleSchema, recurringScheduleUpdateSchema, appointmentUpdateSchema, orderItemSchema, orderValidationError, clientValidationError } from "@/lib/validators";
 
 const uuid = "11111111-1111-1111-1111-111111111111";
 
@@ -94,6 +94,48 @@ describe("recurringScheduleSchema", () => {
 
   it("does not require daysOfWeek for monthly recurrence", () => {
     expect(recurringScheduleSchema.safeParse({ ...base, frequency: "monthly", dayOfMonth: 15 }).success).toBe(true);
+  });
+});
+
+describe("recurringScheduleUpdateSchema", () => {
+  it("accepts a valid serviceId + nonnegative price", () => {
+    expect(recurringScheduleUpdateSchema.safeParse({ serviceId: uuid, price: 650 }).success).toBe(true);
+    expect(recurringScheduleUpdateSchema.safeParse({ serviceId: uuid, price: 0 }).success).toBe(true);
+  });
+
+  it("rejects a negative price", () => {
+    expect(recurringScheduleUpdateSchema.safeParse({ serviceId: uuid, price: -0.01 }).success).toBe(false);
+  });
+
+  it("rejects an invalid serviceId", () => {
+    expect(recurringScheduleUpdateSchema.safeParse({ serviceId: "not-a-uuid", price: 100 }).success).toBe(false);
+  });
+
+  it("does not accept frequency/day/date fields - this endpoint only edits serviceId/price", () => {
+    const parsed = recurringScheduleUpdateSchema.safeParse({ serviceId: uuid, price: 100, frequency: "weekly", startDate: "2026-05-01" });
+    expect(parsed.success).toBe(true);
+    if (parsed.success) expect(parsed.data).toEqual({ serviceId: uuid, price: 100 });
+  });
+});
+
+describe("appointmentUpdateSchema priceOverride", () => {
+  it("accepts a nonnegative priceOverride", () => {
+    expect(appointmentUpdateSchema.safeParse({ priceOverride: 650 }).success).toBe(true);
+    expect(appointmentUpdateSchema.safeParse({ priceOverride: 0 }).success).toBe(true);
+  });
+
+  it("accepts null to clear the override back to 'inherit the OS's value'", () => {
+    const parsed = appointmentUpdateSchema.safeParse({ priceOverride: null });
+    expect(parsed.success).toBe(true);
+    if (parsed.success) expect(parsed.data.priceOverride).toBeNull();
+  });
+
+  it("rejects a negative priceOverride", () => {
+    expect(appointmentUpdateSchema.safeParse({ priceOverride: -0.01 }).success).toBe(false);
+  });
+
+  it("is independent of date/employeeId/status - setting only priceOverride never requires those fields", () => {
+    expect(appointmentUpdateSchema.safeParse({ priceOverride: 650 }).success).toBe(true);
   });
 });
 

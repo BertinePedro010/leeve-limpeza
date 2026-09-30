@@ -1,4 +1,5 @@
 import type { UserRole } from "@prisma/client";
+import { cookies } from "next/headers";
 import { prisma } from "@/lib/prisma";
 import { getCurrentUser, AuthServiceUnavailableError } from "@/lib/auth";
 import { fail } from "@/lib/json";
@@ -35,7 +36,33 @@ export interface AuthContext {
 // is what looked like "the app closes" when creating a recurrence with an
 // expired session. Fix: never redirect from API code - return a clean 401
 // JSON error instead, so `api()` throws a real, catchable ApiError.
+// The frontend's loadAll() (components/SaasApp.tsx) fires 6 API calls in
+// parallel on every branch switch/mount, each independently hitting Supabase
+// Auth (a real network round-trip) + this same profile lookup for the exact
+// same user. Coalescing concurrent calls that carry the exact same request
+// cookies into one shared in-flight lookup collapses that burst to ~1 upstream
+// call instead of 6. Single-flight only, no TTL: an entry lives strictly as
+// long as its own lookup is in flight and is removed the instant it settles
+// (success or failure), so nothing is ever served past its own freshness - a
+// login/logout between bursts changes the cookie key anyway.
+const inFlightAuth = new Map<string, Promise<AuthContext>>();
+
 export async function requireAuth(): Promise<AuthContext> {
+  const cookieStore = await cookies();
+  const key = cookieStore.getAll().map((c) => `${c.name}=${c.value}`).sort().join("&");
+  const existing = inFlightAuth.get(key);
+  if (existing) return existing;
+
+  const promise = resolveAuth();
+  inFlightAuth.set(key, promise);
+  try {
+    return await promise;
+  } finally {
+    inFlightAuth.delete(key);
+  }
+}
+
+async function resolveAuth(): Promise<AuthContext> {
   let user: Awaited<ReturnType<typeof getCurrentUser>>;
   try {
     user = await getCurrentUser();

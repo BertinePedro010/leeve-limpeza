@@ -11,13 +11,13 @@ import { orderRealTotal } from "@/lib/order-total";
 // a local copy rather than a shared import, matching that route's own
 // documented reasoning (each order route's include can diverge later without
 // one silently affecting the others).
-function withRealTotal<T extends { totalAmount: unknown; _count: { appointments: number } }>(order: T): Omit<T, "_count"> & { total: number } {
-  const { _count, ...rest } = order;
-  return { ...rest, total: orderRealTotal(order.totalAmount as number | string, _count.appointments) };
+function withRealTotal<T extends { totalAmount: unknown; appointments: Array<{ cancelledAt: unknown; priceOverride: unknown }> }>(order: T): T & { total: number } {
+  const nonCancelled = order.appointments.filter((a) => !a.cancelledAt) as Array<{ priceOverride: number | string | null }>;
+  return { ...order, total: orderRealTotal(order.totalAmount as number | string, nonCancelled) };
 }
 
 function include(canViewFinance: boolean) {
-  return { client: true, branch: { select: { id: true, name: true, city: true } }, items: { include: { service: true } }, employees: { include: { employee: true } }, transactions: canViewFinance, appointments: { include: { employee: { select: { id: true, name: true } } }, orderBy: [{ date: "asc" as const }, { startTime: "asc" as const }] }, recurringSchedules: { select: { id: true, frequency: true, interval: true, dayOfWeek: true, daysOfWeek: true, dayOfMonth: true, startDate: true, endDate: true, active: true, price: true } }, _count: { select: { appointments: { where: { cancelledAt: null } } } } };
+  return { client: true, branch: { select: { id: true, name: true, city: true } }, items: { include: { service: true } }, employees: { include: { employee: true } }, transactions: canViewFinance, appointments: { include: { employee: { select: { id: true, name: true } } }, orderBy: [{ date: "asc" as const }, { startTime: "asc" as const }] }, recurringSchedules: { select: { id: true, frequency: true, interval: true, dayOfWeek: true, daysOfWeek: true, dayOfMonth: true, startDate: true, endDate: true, active: true, price: true } } };
 }
 
 // Turns an existing, still-scheduled OS into a recurring one - the SAME OS

@@ -26,7 +26,13 @@ export const orderSchema = z.object({ branchId: z.string().uuid().optional(), cl
 
 export const appointmentStatusEnum = z.enum(ORDER_STATUS_VALUES);
 export const appointmentCreateSchema = z.object({ orderId: z.string().uuid(), employeeId: z.string().uuid().optional().nullable(), dates: z.array(z.coerce.date()).min(1), startTime: z.string().min(1), endTime: z.string().min(1), notes: z.string().optional().nullable() });
-export const appointmentUpdateSchema = z.object({ employeeId: z.string().uuid().optional().nullable(), date: z.coerce.date().optional(), startTime: z.string().min(1).optional(), endTime: z.string().min(1).optional(), status: appointmentStatusEnum.optional(), notes: z.string().optional().nullable() });
+// `priceOverride`: this one occurrence's own value (see prisma/schema.prisma
+// Appointment.priceOverride) - null clears it back to "inherit the OS's
+// totalAmount" (today's behavior for every row). Deliberately independent of
+// every other field here: setting it never touches ServiceOrderItem,
+// ServiceOrder.totalAmount, RecurringSchedule.price, or any sibling
+// Appointment (see app/api/appointments/[id] and lib/order-total.ts).
+export const appointmentUpdateSchema = z.object({ employeeId: z.string().uuid().optional().nullable(), date: z.coerce.date().optional(), startTime: z.string().min(1).optional(), endTime: z.string().min(1).optional(), status: appointmentStatusEnum.optional(), notes: z.string().optional().nullable(), priceOverride: z.coerce.number().nonnegative().optional().nullable() });
 export const appointmentCancelSchema = z.object({ reason: z.string().min(3) });
 
 // Same pattern as orderValidationError/clientValidationError above - lets a
@@ -83,6 +89,15 @@ export const recurringScheduleSchema = z.object({
   message: "Selecione pelo menos um dia da semana para a recorrencia quinzenal.",
   path: ["daysOfWeek"],
 });
+
+// Scoped strictly to the recurrence's OWN "valor mensal" fields (serviceId +
+// price) - see RecurringSchedule in prisma/schema.prisma. Deliberately does
+// NOT include frequency/days/dates/orderId/clientId: those are set once at
+// creation and are out of scope for this endpoint. Editing serviceId/price
+// here never touches ServiceOrderItem.unitPrice, ServiceOrder.totalAmount, or
+// any Appointment - RecurringSchedule.price has no effect on those (see
+// app/api/recurring-schedules/[id]/route.ts).
+export const recurringScheduleUpdateSchema = z.object({ serviceId: z.string().uuid(), price: z.coerce.number().nonnegative() });
 
 export const branchSchema = z.object({ name: z.string().min(2), city: z.string().min(2), state: z.string().length(2), active: z.coerce.boolean().default(true) });
 

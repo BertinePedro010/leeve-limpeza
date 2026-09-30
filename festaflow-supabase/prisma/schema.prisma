@@ -154,6 +154,12 @@ model Client {
   orders              ServiceOrder[]
   recurringSchedules  RecurringSchedule[]
 
+  // Plain btree - cannot serve the leading-wildcard `contains`/ILIKE search
+  // app/api/orders (clientSearch) and app/api/orders/summary already run
+  // against this column. A separate GIN trigram index (idx_clients_name_trgm,
+  // migration 20260930120000) covers that - not expressible in Prisma schema
+  // syntax (needs pg_trgm's gin_trgm_ops operator class), same as the raw-SQL
+  // uq_clients_branch_document_name index below/above.
   @@index([name], map: "idx_clients_name")
   @@index([email], map: "idx_clients_email")
   @@index([phone], map: "idx_clients_phone")
@@ -372,6 +378,19 @@ model Appointment {
   cancelledBy         String?   @map("cancelled_by") @db.Uuid
   completedAt         DateTime? @map("completed_at") @db.Timestamptz(6)
   recurringScheduleId String?   @map("recurring_schedule_id") @db.Uuid
+  // The ONLY exception to "no Appointment carries a price column" (see
+  // lib/order-total.ts, app/api/dashboard's loadOccurrences, app/api/reports/
+  // clients - all previously documented that rule as absolute). Null (the
+  // default, and the only value every pre-existing row has) means "inherit
+  // the parent OS's totalAmount", exactly the old behavior - so adding this
+  // column changes nothing until a user explicitly overrides one occurrence.
+  // Set ONLY via PUT /api/appointments/[id] (components/SaasApp.tsx
+  // AppointmentRow's inline price editor); editing it touches this one row
+  // alone - never ServiceOrderItem.unitPrice, ServiceOrder.totalAmount,
+  // RecurringSchedule.price, or any sibling Appointment (the requirement this
+  // column exists to satisfy: editing one occurrence of a recurrence must
+  // never move the others).
+  priceOverride       Decimal?  @map("price_override") @db.Decimal(10, 2)
   createdAt           DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt           DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
 

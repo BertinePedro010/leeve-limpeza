@@ -25,17 +25,17 @@ function total(items: Array<{ quantity: number; unitPrice: number }>) {
 // the same "Recorrencia" section from the same source, never two rules for
 // the same data (see recurring OS PDF/print fix).
 function include(canViewFinance: boolean) {
-  return { client: true, branch: { select: { id: true, name: true, city: true } }, items: { include: { service: true } }, employees: { include: { employee: true } }, transactions: canViewFinance, appointments: { include: { employee: { select: { id: true, name: true } } }, orderBy: [{ date: "asc" as const }, { startTime: "asc" as const }] }, recurringSchedules: { select: { id: true, frequency: true, interval: true, dayOfWeek: true, daysOfWeek: true, dayOfMonth: true, startDate: true, endDate: true, active: true, price: true } }, _count: { select: { appointments: { where: { cancelledAt: null } } } } };
+  return { client: true, branch: { select: { id: true, name: true, city: true } }, items: { include: { service: true } }, employees: { include: { employee: true } }, transactions: canViewFinance, appointments: { include: { employee: { select: { id: true, name: true } } }, orderBy: [{ date: "asc" as const }, { startTime: "asc" as const }] }, recurringSchedules: { select: { id: true, serviceId: true, frequency: true, interval: true, dayOfWeek: true, daysOfWeek: true, dayOfMonth: true, startDate: true, endDate: true, active: true, price: true } } };
 }
 
-// `total` = orderRealTotal(totalAmount, non-cancelled appointment count) -
-// the OS's real value across every occurrence it actually has, distinct from
-// `totalAmount` (the value of a single occurrence). `_count` is Prisma's own
-// wire shape, never a frontend-facing field - stripped here so callers only
-// ever see the already-computed `total`.
-function withRealTotal<T extends { totalAmount: unknown; _count: { appointments: number } }>(order: T): Omit<T, "_count"> & { total: number } {
-  const { _count, ...rest } = order;
-  return { ...rest, total: orderRealTotal(order.totalAmount as number | string, _count.appointments) };
+// `total` = orderRealTotal(totalAmount, non-cancelled appointments) - the
+// OS's real value across every occurrence it actually has (override-aware,
+// see lib/order-total.ts), distinct from `totalAmount` (the value of a
+// single occurrence with no override). Reuses `order.appointments` already
+// fetched by include() above - no separate `_count` query needed.
+function withRealTotal<T extends { totalAmount: unknown; appointments: Array<{ cancelledAt: unknown; priceOverride: unknown }> }>(order: T): T & { total: number } {
+  const nonCancelled = order.appointments.filter((a) => !a.cancelledAt) as Array<{ priceOverride: number | string | null }>;
+  return { ...order, total: orderRealTotal(order.totalAmount as number | string, nonCancelled) };
 }
 
 // Returns the validated client so the caller can snapshot its address into

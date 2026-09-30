@@ -21,11 +21,14 @@ export type Employee = { id: string; name: string; role: string; phone?: string;
 export type Service = { id: string; name: string; description?: string; price: string | number; durationHours: string | number; category: string; active: boolean };
 type OrderItem = { id?: string; serviceId: string; quantity: number; unitPrice: string | number; service?: Service };
 type OrderEmployee = { employee: Employee };
-type Appointment = { id: string; orderId: string; branchId: string; employeeId?: string | null; employee?: { id: string; name: string } | null; date: string; startTime: string; endTime: string; status: string; notes?: string | null; cancellationReason?: string | null; cancelledAt?: string | null };
+// `priceOverride`: this ONE occurrence's own value (see prisma/schema.prisma
+// Appointment.priceOverride) - null/undefined means "inherit the OS's
+// totalAmount", exactly like every appointment before this field existed.
+type Appointment = { id: string; orderId: string; branchId: string; employeeId?: string | null; employee?: { id: string; name: string } | null; date: string; startTime: string; endTime: string; status: string; notes?: string | null; cancellationReason?: string | null; cancelledAt?: string | null; priceOverride?: string | number | null };
 type Branch = { id: string; name: string; city: string };
 // Same fields lib/pdf.ts selects for its own "Recorrencia" section - PDF and
 // print read the same shape from the same API response, never two rules.
-type RecurringSchedule = { id: string; frequency: "weekly" | "biweekly" | "monthly"; interval: number; dayOfWeek?: number | null; daysOfWeek?: number[] | null; dayOfMonth?: number | null; startDate: string; endDate?: string | null; active: boolean; price: string | number };
+type RecurringSchedule = { id: string; serviceId: string; frequency: "weekly" | "biweekly" | "monthly"; interval: number; dayOfWeek?: number | null; daysOfWeek?: number[] | null; dayOfMonth?: number | null; startDate: string; endDate?: string | null; active: boolean; price: string | number };
 type Order = { id: string; code: string; clientId: string; client?: Client; branch?: Branch; eventDate: string; startTime: string; endTime: string; location: string; addressZip?: string | null; addressStreet?: string | null; addressNumber?: string | null; addressNeighborhood?: string | null; addressCity?: string | null; addressState?: string | null; addressReference?: string | null; status: string; cancelledAt?: string | null; cancellationReason?: string | null; paymentMethod?: string | null; paymentMethodLegacy?: string | null; notes?: string; signatureName?: string; signatureDate?: string; totalAmount: string | number; total: string | number; items: OrderItem[]; employees: OrderEmployee[]; appointments: Appointment[]; recurringSchedules?: RecurringSchedule[] };
 type Transaction = { id: string; type: "receita" | "despesa"; category: string; description: string; amount: string | number; dueDate: string; paidAt?: string; status: "pago" | "pendente"; orderId?: string; paymentMethod?: string | null; isAutoRevenue?: boolean };
 type OccurrenceBucket = { count: number; total: number };
@@ -496,6 +499,15 @@ function ClientServiceAddressPanel({ client, addressState, historical, onEditCli
 // list; `orders` is kept as a prop (not refetched here) purely so this modal
 // can re-sync itself from that same list after every reload() - the same
 // pattern the original OrdersView used, now shared across all three callers.
+// Shown before saving a unitPrice change to an already-"realizado" OS - never
+// for "agendado" (that path saves immediately, same as reschedule/date edits
+// on an appointment). Not a block, just a chance to back out - the price can
+// legitimately need correcting after the fact, but it affects historico,
+// relatorios e financeiro (syncOrderBilling recalculates the linked
+// auto-revenue Transaction in place - see lib/billing.ts), so the user
+// confirms first. Mirrors RESCHEDULE_REALIZADO_CONFIRM below.
+const REALIZADO_PRICE_EDIT_CONFIRM = "Esta OS ja foi realizada. Alterar o valor podera refletir no historico, relatorios e financeiro. Deseja continuar?";
+
 function OrderFormModal({ order, orders, clients, employees, services, branchId, onClose, reload, onSaved, onEditClient }: { order: Order | null; orders: Order[]; clients: Client[]; employees: Employee[]; services: Service[]; branchId: string | null; onClose: () => void; reload: () => Promise<void>; onSaved: (order: Order) => Promise<void>; onEditClient?: (clientId: string) => void }) {
   // Address fields are intentionally absent from the form: the OS service
   // address is never typed here, it is carried from the selected client's
@@ -512,6 +524,12 @@ function OrderFormModal({ order, orders, clients, employees, services, branchId,
   const [saving, setSaving] = useState(false);
   const [extraDates, setExtraDates] = useState<string[]>([]);
   const total = form.items.reduce((s, i) => s + i.quantity * Number(i.unitPrice), 0);
+  // Snapshot of the unitPrice this OS was opened with, by position - used
+  // only to detect whether the user actually changed a price while editing a
+  // "realizado" OS (see REALIZADO_PRICE_EDIT_CONFIRM below). Captured once at
+  // mount, never updated afterward, so it stays the true "before" value for
+  // the confirmation check even as form.items changes while editing.
+  const initialItemPricesRef = useRef(form.items.map((i) => Number(i.unitPrice)));
 
   // The OS service address always comes from the selected client's cadastro.
   // Exception (must match the PUT route in app/api/orders/[id]): an existing
@@ -573,6 +591,14 @@ function OrderFormModal({ order, orders, clients, employees, services, branchId,
       setErrorField("clientId");
       focusField("clientId");
       return;
+    }
+    // A price actually changed (or a new item was added, which is also a new
+    // value) while editing an OS that's already "realizado" - confirm before
+    // touching historico/relatorios/financeiro. Status itself is never
+    // changed here and no new OS/Transaction is created either way.
+    if (current?.status === "realizado") {
+      const pricesChanged = form.items.some((item, idx) => Number(item.unitPrice) !== initialItemPricesRef.current[idx]);
+      if (pricesChanged && !confirm(REALIZADO_PRICE_EDIT_CONFIRM)) return;
     }
     setSaving(true);
     try {
@@ -645,6 +671,22 @@ function OrderFormModal({ order, orders, clients, employees, services, branchId,
       return false;
     }
   }
+  // Sets or clears ONE occurrence's own priceOverride (see
+  // prisma/schema.prisma) - never the OS's items/totalAmount, never
+  // RecurringSchedule.price, never a sibling Appointment. `value === null`
+  // clears the override back to "inherit the OS's value" (see
+  // app/api/appointments/[id] and lib/order-total.ts).
+  async function setAppointmentPrice(id: string, value: number | null): Promise<boolean> {
+    try {
+      await api(`/api/appointments/${id}`, { method: "PUT", body: JSON.stringify({ priceOverride: value }) });
+      await reload();
+      setSuccess("Valor do atendimento atualizado com sucesso.");
+      return true;
+    } catch (err) {
+      alert(err instanceof Error ? err.message : "Nao foi possivel alterar o valor do atendimento. Tente novamente.");
+      return false;
+    }
+  }
   async function assignEmployee(id: string, employeeId: string) {
     try { await api(`/api/appointments/${id}`, { method: "PUT", body: JSON.stringify({ employeeId: employeeId || null }) }); await reload(); }
     catch (err) { alert(err instanceof Error ? err.message : "Erro ao atribuir funcionario."); }
@@ -664,27 +706,29 @@ function OrderFormModal({ order, orders, clients, employees, services, branchId,
     catch (err) { alert(err instanceof Error ? err.message : "Erro ao remover atendimento."); }
   }
 
-  return <Modal title={current ? `Editar OS ${current.code}` : "Nova OS"} onClose={onClose}><form onSubmit={submit} className="space-y-4">{success && <p role="status" className="rounded-xl bg-emerald-50 p-3 text-sm font-bold text-emerald-700">{success}</p>}{error && <p role="alert" className="rounded-xl bg-rose-50 p-3 text-sm font-bold text-rose-600">{error}</p>}<div className="grid gap-3 md:grid-cols-3"><Select id="os-field-clientId" error={errorField === "clientId" ? error : undefined} value={form.clientId} set={(v) => setForm({ ...form, clientId: v })} options={clients.map((c) => [c.id, c.name])} /><Input id="os-field-eventDate" error={errorField === "eventDate" ? error : undefined} type="date" label="Data" value={form.eventDate} set={(v) => setForm({ ...form, eventDate: v })} /><Select id="os-field-status" error={errorField === "status" ? error : undefined} value={form.status} set={(v) => setForm({ ...form, status: v })} options={ORDER_STATUS_VALUES.map((s) => [s, orderStatusLabels[s]])} /><Input id="os-field-startTime" error={errorField === "startTime" ? error : undefined} label="Inicio" value={form.startTime} set={(v) => setForm({ ...form, startTime: v })} /><Input id="os-field-endTime" error={errorField === "endTime" ? error : undefined} label="Fim" value={form.endTime} set={(v) => setForm({ ...form, endTime: v })} /><label className="grid gap-1 text-xs font-black uppercase text-slate-500">Pagamento<Select value={form.paymentMethod} set={(v) => setForm({ ...form, paymentMethod: v })} options={paymentMethodOptions} /></label></div>{current?.paymentMethodLegacy && !current.paymentMethod && <p className="text-xs text-slate-400">Valor legado registrado anteriormente: <b>{current.paymentMethodLegacy}</b> (selecione uma opcao acima para substituir por um valor controlado).</p>}{current && (current.cancelledAt ? <p role="alert" className="rounded-xl bg-slate-100 p-3 text-sm font-bold text-slate-600">Esta OS foi cancelada{current.cancellationReason ? `: ${current.cancellationReason}` : "."}</p> : <button type="button" onClick={cancelOrder} className="text-xs font-bold text-rose-600 hover:underline">Cancelar OS</button>)}<ClientServiceAddressPanel client={selectedClient} addressState={clientAddressState} historical={preservesOsAddress ? current : null} onEditClient={onEditClient} />{!current && <div className="rounded-2xl bg-slate-50 p-4"><h4 className="font-black">Datas adicionais (opcional)</h4><p className="text-xs text-slate-500">Cria um atendimento para a data principal acima e mais um para cada data selecionada aqui, todos na mesma OS. Selecione varias datas no calendario e confirme de uma vez.</p><div className="mt-3"><MultiDatePicker onConfirm={addDates} disabledDates={[form.eventDate, ...extraDates]} /></div>{extraDates.length > 0 && <div className="mt-3 flex flex-wrap gap-2">{extraDates.map((d) => <span key={d} className="flex items-center gap-2 rounded-full bg-indigo-50 px-3 py-1 text-xs font-bold text-indigo-700">{dateOnlyLabel(d)}<button type="button" onClick={() => removeDate(d)} className="text-rose-600">x</button></span>)}</div>}</div>}<div id="os-field-items" tabIndex={-1} className={`rounded-2xl bg-slate-50 p-4 ${errorField === "items" ? "ring-2 ring-rose-500" : ""}`}><h4 className="font-black">Servicos contratados</h4>{errorField === "items" && error && <p role="alert" className="mt-1 text-xs font-bold text-rose-600">{error}</p>}<div className="mt-3 flex flex-wrap gap-2"><select value={serviceId} onChange={(e) => setServiceId(e.target.value)} className="w-full rounded-xl border p-3">{services.map((s) => <option key={s.id} value={s.id}>{s.name} - {money(s.price)}</option>)}</select><button type="button" onClick={addService} className="rounded-xl bg-slate-950 px-4 font-black text-white">Adicionar</button></div>{form.items.map((i, idx) => <div key={idx} className="mt-2 flex flex-wrap items-center gap-2 rounded-xl bg-white p-3"><span className="min-w-0 flex-1 break-words">{services.find((s) => s.id === i.serviceId)?.name}</span><input type="number" min={1} value={i.quantity} onChange={(e) => setForm({ ...form, items: form.items.map((x, n) => n === idx ? { ...x, quantity: Number(e.target.value) } : x) })} className="w-16 shrink-0 rounded border p-2" /><b className="shrink-0">{money(i.quantity * Number(i.unitPrice))}</b><button type="button" onClick={() => setForm({ ...form, items: form.items.filter((_, n) => n !== idx) })} className="shrink-0 font-bold text-rose-600">Remover</button></div>)}<p className="mt-3 text-right text-lg font-black">Total: {money(total)}</p></div><EmployeeMultiSelect employees={employees} selected={form.employeeIds} onChange={(ids) => setForm({ ...form, employeeIds: ids })} /><Text label="Observacoes" value={form.notes} set={(v) => setForm({ ...form, notes: v })} /><Input label="Assinatura" value={form.signatureName} set={(v) => setForm({ ...form, signatureName: v })} />{current && <AppointmentsSection appointments={current.appointments} employees={employees} orderTotal={Number(current.totalAmount)} serviceLabel={current.items.map((i) => `${i.service?.name ?? "Servico"}${i.quantity > 1 ? ` x${i.quantity}` : ""}`).join(", ") || "-"} onCancel={cancelAppointment} onComplete={completeAppointment} onReschedule={rescheduleAppointment} onAssign={assignEmployee} onSetStatus={setAppointmentStatus} onRemove={removeAppointment} onAdd={addAppointments} />}<button disabled={saving || !addressReady} className="rounded-xl bg-indigo-600 p-3 font-black text-white disabled:opacity-60">{saving ? "Salvando..." : "Salvar"}</button></form></Modal>;
+  return <Modal title={current ? `Editar OS ${current.code}` : "Nova OS"} onClose={onClose}><form onSubmit={submit} className="space-y-4">{success && <p role="status" className="rounded-xl bg-emerald-50 p-3 text-sm font-bold text-emerald-700">{success}</p>}{error && <p role="alert" className="rounded-xl bg-rose-50 p-3 text-sm font-bold text-rose-600">{error}</p>}<div className="grid gap-3 md:grid-cols-3"><Select id="os-field-clientId" error={errorField === "clientId" ? error : undefined} value={form.clientId} set={(v) => setForm({ ...form, clientId: v })} options={clients.map((c) => [c.id, c.name])} /><Input id="os-field-eventDate" error={errorField === "eventDate" ? error : undefined} type="date" label="Data" value={form.eventDate} set={(v) => setForm({ ...form, eventDate: v })} /><Select id="os-field-status" error={errorField === "status" ? error : undefined} value={form.status} set={(v) => setForm({ ...form, status: v })} options={ORDER_STATUS_VALUES.map((s) => [s, orderStatusLabels[s]])} /><Input id="os-field-startTime" error={errorField === "startTime" ? error : undefined} label="Inicio" value={form.startTime} set={(v) => setForm({ ...form, startTime: v })} /><Input id="os-field-endTime" error={errorField === "endTime" ? error : undefined} label="Fim" value={form.endTime} set={(v) => setForm({ ...form, endTime: v })} /><label className="grid gap-1 text-xs font-black uppercase text-slate-500">Pagamento<Select value={form.paymentMethod} set={(v) => setForm({ ...form, paymentMethod: v })} options={paymentMethodOptions} /></label></div>{current?.paymentMethodLegacy && !current.paymentMethod && <p className="text-xs text-slate-400">Valor legado registrado anteriormente: <b>{current.paymentMethodLegacy}</b> (selecione uma opcao acima para substituir por um valor controlado).</p>}{current && (current.cancelledAt ? <p role="alert" className="rounded-xl bg-slate-100 p-3 text-sm font-bold text-slate-600">Esta OS foi cancelada{current.cancellationReason ? `: ${current.cancellationReason}` : "."}</p> : <button type="button" onClick={cancelOrder} className="text-xs font-bold text-rose-600 hover:underline">Cancelar OS</button>)}<ClientServiceAddressPanel client={selectedClient} addressState={clientAddressState} historical={preservesOsAddress ? current : null} onEditClient={onEditClient} />{!current && <div className="rounded-2xl bg-slate-50 p-4"><h4 className="font-black">Datas adicionais (opcional)</h4><p className="text-xs text-slate-500">Cria um atendimento para a data principal acima e mais um para cada data selecionada aqui, todos na mesma OS. Selecione varias datas no calendario e confirme de uma vez.</p><div className="mt-3"><MultiDatePicker onConfirm={addDates} disabledDates={[form.eventDate, ...extraDates]} /></div>{extraDates.length > 0 && <div className="mt-3 flex flex-wrap gap-2">{extraDates.map((d) => <span key={d} className="flex items-center gap-2 rounded-full bg-indigo-50 px-3 py-1 text-xs font-bold text-indigo-700">{dateOnlyLabel(d)}<button type="button" onClick={() => removeDate(d)} className="text-rose-600">x</button></span>)}</div>}</div>}<div id="os-field-items" tabIndex={-1} className={`rounded-2xl bg-slate-50 p-4 ${errorField === "items" ? "ring-2 ring-rose-500" : ""}`}><h4 className="font-black">Servicos contratados</h4><p className="mt-1 text-xs text-slate-500">O valor pode ser ajustado por servico apenas nesta OS; o preco padrao do servico (cadastro) nao e alterado.</p>{errorField === "items" && error && <p role="alert" className="mt-1 text-xs font-bold text-rose-600">{error}</p>}<div className="mt-3 flex flex-wrap gap-2"><select value={serviceId} onChange={(e) => setServiceId(e.target.value)} className="w-full rounded-xl border p-3">{services.map((s) => <option key={s.id} value={s.id}>{s.name} - {money(s.price)}</option>)}</select><button type="button" onClick={addService} className="rounded-xl bg-slate-950 px-4 font-black text-white">Adicionar</button></div>{form.items.map((i, idx) => <div key={idx} className="mt-2 flex flex-wrap items-center gap-2 rounded-xl bg-white p-3"><span className="min-w-0 flex-1 break-words">{services.find((s) => s.id === i.serviceId)?.name}</span><label className="flex shrink-0 items-center gap-1 text-[10px] font-black uppercase text-slate-500">Qtd<input type="number" min={1} value={i.quantity} onChange={(e) => setForm({ ...form, items: form.items.map((x, n) => n === idx ? { ...x, quantity: Number(e.target.value) } : x) })} className="w-16 rounded border p-2 text-sm normal-case font-normal text-slate-900" /></label><label className="flex shrink-0 items-center gap-1 text-[10px] font-black uppercase text-slate-500">Valor unit.<input type="number" min={0} step="0.01" value={i.unitPrice} onChange={(e) => setForm({ ...form, items: form.items.map((x, n) => n === idx ? { ...x, unitPrice: Number(e.target.value) } : x) })} className="w-24 rounded border p-2 text-sm normal-case font-normal text-slate-900" /></label><b className="shrink-0">{money(i.quantity * Number(i.unitPrice))}</b><button type="button" onClick={() => setForm({ ...form, items: form.items.filter((_, n) => n !== idx) })} className="shrink-0 font-bold text-rose-600">Remover</button></div>)}<p className="mt-3 text-right text-lg font-black">Total: {money(total)}</p></div><EmployeeMultiSelect employees={employees} selected={form.employeeIds} onChange={(ids) => setForm({ ...form, employeeIds: ids })} /><Text label="Observacoes" value={form.notes} set={(v) => setForm({ ...form, notes: v })} /><Input label="Assinatura" value={form.signatureName} set={(v) => setForm({ ...form, signatureName: v })} />{current?.recurringSchedules?.[0] && <RecurringScheduleSection schedule={current.recurringSchedules[0]} services={services} reload={reload} />}{current && <AppointmentsSection appointments={current.appointments} employees={employees} orderTotal={Number(current.totalAmount)} serviceLabel={current.items.map((i) => `${i.service?.name ?? "Servico"}${i.quantity > 1 ? ` x${i.quantity}` : ""}`).join(", ") || "-"} onCancel={cancelAppointment} onComplete={completeAppointment} onReschedule={rescheduleAppointment} onSetPrice={setAppointmentPrice} onAssign={assignEmployee} onSetStatus={setAppointmentStatus} onRemove={removeAppointment} onAdd={addAppointments} />}<button disabled={saving || !addressReady} className="rounded-xl bg-indigo-600 p-3 font-black text-white disabled:opacity-60">{saving ? "Salvando..." : "Salvar"}</button></form></Modal>;
 }
 
 // Each row = one occurrence (Appointment) of this single OS. Every occurrence
-// carries its OWN data/horario/funcionario/status; the servico and valor are
-// inherited from the OS (there is no per-appointment amount column - see the
-// Dashboard route). Actions act on that one appointment only, never creating
-// or duplicating an OS.
-function AppointmentsSection({ appointments, employees, orderTotal, serviceLabel, onCancel, onComplete, onReschedule, onAssign, onSetStatus, onRemove, onAdd }: { appointments: Appointment[]; employees: Employee[]; orderTotal: number; serviceLabel: string; onCancel: (id: string) => void; onComplete: (id: string) => void; onReschedule: (id: string, date: string, startTime: string, endTime: string) => Promise<boolean>; onAssign: (id: string, employeeId: string) => void; onSetStatus: (id: string, status: string) => void; onRemove: (id: string) => void; onAdd: (dates: string[], startTime: string, endTime: string) => void }) {
+// carries its OWN data/horario/funcionario/status and, since
+// Appointment.priceOverride (see prisma/schema.prisma), optionally its OWN
+// valor too - when absent it still inherits the OS's value exactly like
+// before this field existed. Actions act on that one appointment only, never
+// creating or duplicating an OS, and a price override never touches any
+// sibling occurrence, the OS's items, or RecurringSchedule.price.
+function AppointmentsSection({ appointments, employees, orderTotal, serviceLabel, onCancel, onComplete, onReschedule, onSetPrice, onAssign, onSetStatus, onRemove, onAdd }: { appointments: Appointment[]; employees: Employee[]; orderTotal: number; serviceLabel: string; onCancel: (id: string) => void; onComplete: (id: string) => void; onReschedule: (id: string, date: string, startTime: string, endTime: string) => Promise<boolean>; onSetPrice: (id: string, value: number | null) => Promise<boolean>; onAssign: (id: string, employeeId: string) => void; onSetStatus: (id: string, status: string) => void; onRemove: (id: string) => void; onAdd: (dates: string[], startTime: string, endTime: string) => void }) {
   const [adding, setAdding] = useState(false);
   const [startTime, setStartTime] = useState("18:00");
   const [endTime, setEndTime] = useState("23:59");
   const existingDates = appointments.map((a) => dateOnly(a.date));
   const activeCount = appointments.filter((a) => !a.cancelledAt).length;
   return <div className="rounded-2xl bg-slate-50 p-4">
-    <div className="flex flex-wrap items-center justify-between gap-2"><div><h4 className="font-black">Atendimentos / Datas ({appointments.length})</h4><p className="text-xs text-slate-500">Servico: {serviceLabel} - Valor por ocorrencia: <b>{money(orderTotal)}</b></p></div><button type="button" onClick={() => setAdding((v) => !v)} className="text-xs font-bold text-indigo-600">{adding ? "Cancelar" : "+ Adicionar atendimentos"}</button></div>
+    <div className="flex flex-wrap items-center justify-between gap-2"><div><h4 className="font-black">Atendimentos / Datas ({appointments.length})</h4><p className="text-xs text-slate-500">Servico: {serviceLabel} - Valor padrao por ocorrencia: <b>{money(orderTotal)}</b></p></div><button type="button" onClick={() => setAdding((v) => !v)} className="text-xs font-bold text-indigo-600">{adding ? "Cancelar" : "+ Adicionar atendimentos"}</button></div>
     {adding && <div className="mt-3 space-y-3 rounded-xl border bg-white p-3">
       <div className="flex flex-wrap items-center gap-3"><label className="text-xs font-black uppercase text-slate-500">Inicio<input value={startTime} onChange={(e) => setStartTime(e.target.value)} className="ml-2 w-20 rounded border p-2 text-sm normal-case" /></label><label className="text-xs font-black uppercase text-slate-500">Fim<input value={endTime} onChange={(e) => setEndTime(e.target.value)} className="ml-2 w-20 rounded border p-2 text-sm normal-case" /></label></div>
       <MultiDatePicker disabledDates={existingDates} onConfirm={(dates) => { onAdd(dates, startTime, endTime); setAdding(false); }} />
     </div>}
-    <div className="mt-3 space-y-2">{appointments.map((a) => <AppointmentRow key={a.id} appointment={a} employees={employees} occurrenceValue={orderTotal} serviceLabel={serviceLabel} canRemove={activeCount > 1} onCancel={onCancel} onComplete={onComplete} onReschedule={onReschedule} onAssign={onAssign} onSetStatus={onSetStatus} onRemove={onRemove} />)}</div>
+    <div className="mt-3 space-y-2">{appointments.map((a) => <AppointmentRow key={a.id} appointment={a} employees={employees} occurrenceValue={orderTotal} serviceLabel={serviceLabel} canRemove={activeCount > 1} onCancel={onCancel} onComplete={onComplete} onReschedule={onReschedule} onSetPrice={onSetPrice} onAssign={onAssign} onSetStatus={onSetStatus} onRemove={onRemove} />)}</div>
   </div>;
 }
 
@@ -698,12 +742,22 @@ const APPOINTMENT_STATUS_OPTIONS: Array<[string, string]> = ORDER_STATUS_VALUES.
 // off Appointment.date so they simply reflect the corrected date).
 const RESCHEDULE_REALIZADO_CONFIRM = "Este atendimento ja foi realizado. Ao alterar a data, o historico e os relatorios poderao ser atualizados para a nova data. Deseja continuar?";
 
-function AppointmentRow({ appointment, employees, occurrenceValue, serviceLabel, canRemove, onCancel, onComplete, onReschedule, onAssign, onSetStatus, onRemove }: { appointment: Appointment; employees: Employee[]; occurrenceValue: number; serviceLabel: string; canRemove: boolean; onCancel: (id: string) => void; onComplete: (id: string) => void; onReschedule: (id: string, date: string, startTime: string, endTime: string) => Promise<boolean>; onAssign: (id: string, employeeId: string) => void; onSetStatus: (id: string, status: string) => void; onRemove: (id: string) => void }) {
+// Same confirmation pattern as RESCHEDULE_REALIZADO_CONFIRM above, for a
+// price override on an already-"realizado" atendimento - see
+// app/api/appointments/[id] and prisma/schema.prisma Appointment.priceOverride.
+const PRICE_REALIZADO_CONFIRM = "Este atendimento ja foi realizado. Ao alterar o valor, o historico e os relatorios poderao ser atualizados. Deseja continuar?";
+
+function AppointmentRow({ appointment, employees, occurrenceValue, serviceLabel, canRemove, onCancel, onComplete, onReschedule, onSetPrice, onAssign, onSetStatus, onRemove }: { appointment: Appointment; employees: Employee[]; occurrenceValue: number; serviceLabel: string; canRemove: boolean; onCancel: (id: string) => void; onComplete: (id: string) => void; onReschedule: (id: string, date: string, startTime: string, endTime: string) => Promise<boolean>; onSetPrice: (id: string, value: number | null) => Promise<boolean>; onAssign: (id: string, employeeId: string) => void; onSetStatus: (id: string, status: string) => void; onRemove: (id: string) => void }) {
   const [editingDate, setEditingDate] = useState(false);
   const [date, setDate] = useState(dateOnly(appointment.date));
   const [startTime, setStartTime] = useState(appointment.startTime);
   const [endTime, setEndTime] = useState(appointment.endTime);
   const [savingDate, setSavingDate] = useState(false);
+  const hasOverride = appointment.priceOverride != null;
+  const effectiveValue = hasOverride ? Number(appointment.priceOverride) : occurrenceValue;
+  const [editingPrice, setEditingPrice] = useState(false);
+  const [price, setPrice] = useState(effectiveValue);
+  const [savingPrice, setSavingPrice] = useState(false);
   const isRealizado = appointment.status === "realizado";
   const isFinal = isRealizado || !!appointment.cancelledAt;
   // Cancellation is terminal (mirrors the backend guard in PUT
@@ -714,12 +768,29 @@ function AppointmentRow({ appointment, employees, occurrenceValue, serviceLabel,
   // action below (funcionario, remover, marcar realizado, cancelar) still
   // uses `isFinal` and stays blocked for realizado exactly like before.
   const canReschedule = !appointment.cancelledAt;
+  // Same rule as canReschedule: cancellation is terminal, "realizado" is not
+  // a block (it is a confirm - see PRICE_REALIZADO_CONFIRM).
+  const canEditPrice = !appointment.cancelledAt;
   async function saveDate() {
     if (isRealizado && !confirm(RESCHEDULE_REALIZADO_CONFIRM)) return;
     setSavingDate(true);
     const succeeded = await onReschedule(appointment.id, date, startTime, endTime);
     setSavingDate(false);
     if (succeeded) setEditingDate(false);
+  }
+  async function savePrice() {
+    if (isRealizado && !confirm(PRICE_REALIZADO_CONFIRM)) return;
+    setSavingPrice(true);
+    const succeeded = await onSetPrice(appointment.id, price);
+    setSavingPrice(false);
+    if (succeeded) setEditingPrice(false);
+  }
+  async function clearPrice() {
+    if (isRealizado && !confirm(PRICE_REALIZADO_CONFIRM)) return;
+    setSavingPrice(true);
+    const succeeded = await onSetPrice(appointment.id, null);
+    setSavingPrice(false);
+    if (succeeded) { setEditingPrice(false); setPrice(occurrenceValue); }
   }
   return <div className="rounded-xl border bg-white p-3">
     <div className="flex flex-wrap items-center justify-between gap-2">
@@ -728,7 +799,9 @@ function AppointmentRow({ appointment, employees, occurrenceValue, serviceLabel,
         : <button type="button" disabled={!canReschedule} onClick={() => setEditingDate(true)} className={`text-left text-sm font-bold ${!canReschedule ? "text-slate-400" : "text-slate-800 hover:text-indigo-600"}`}>{dateOnlyLabel(appointment.date)} - {appointment.startTime} as {appointment.endTime}{canReschedule && " (reagendar)"}</button>}
       <Badge status={appointment.status} cancelledAt={appointment.cancelledAt} />
     </div>
-    <p className="mt-1 text-xs text-slate-500">{serviceLabel} - <b className="text-slate-700">{money(occurrenceValue)}</b></p>
+    {editingPrice
+      ? <div className="mt-1 flex flex-wrap items-center gap-2"><span className="text-xs text-slate-500">{serviceLabel} -</span><input type="number" min={0} step="0.01" value={price} onChange={(e) => setPrice(Number(e.target.value))} className="w-24 rounded border p-1 text-sm" aria-label="Valor deste atendimento" /><button type="button" disabled={savingPrice} onClick={savePrice} className="text-xs font-bold text-indigo-600 disabled:opacity-60">{savingPrice ? "Salvando..." : "Salvar"}</button>{hasOverride && <button type="button" disabled={savingPrice} onClick={clearPrice} className="text-xs font-bold text-amber-600 disabled:opacity-60">Restaurar valor padrao</button>}<button type="button" disabled={savingPrice} onClick={() => { setEditingPrice(false); setPrice(effectiveValue); }} className="text-xs font-bold text-slate-500 disabled:opacity-60">Cancelar edicao</button></div>
+      : <button type="button" disabled={!canEditPrice} onClick={() => { setPrice(effectiveValue); setEditingPrice(true); }} className={`mt-1 text-left text-xs ${!canEditPrice ? "text-slate-400" : "hover:text-indigo-600"}`}>{serviceLabel} - <b className="text-slate-700">{money(effectiveValue)}</b>{hasOverride && <span className="ml-1 font-bold text-amber-600">(valor proprio)</span>}{canEditPrice && <span className="text-slate-400"> (editar valor)</span>}</button>}
     <div className="mt-2 flex flex-wrap items-center gap-2">
       <select value={appointment.employeeId || ""} onChange={(e) => onAssign(appointment.id, e.target.value)} disabled={isFinal} className="rounded border p-2 text-xs"><option value="">Equipe da OS (padrao)</option>{employees.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}</select>
       <label className="flex items-center gap-1 text-[10px] font-black uppercase text-slate-500">Status<select value={appointment.status} onChange={(e) => { if (e.target.value !== appointment.status) onSetStatus(appointment.id, e.target.value); }} className="rounded border p-2 text-xs normal-case font-normal">{APPOINTMENT_STATUS_OPTIONS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select></label>
@@ -736,6 +809,48 @@ function AppointmentRow({ appointment, employees, occurrenceValue, serviceLabel,
     </div>
     {!isFinal && <div className="mt-2 flex gap-3"><button type="button" onClick={() => onComplete(appointment.id)} className="text-xs font-bold text-emerald-600">Marcar realizado</button><button type="button" onClick={() => onCancel(appointment.id)} className="text-xs font-bold text-rose-600">Cancelar atendimento</button></div>}
     {appointment.cancelledAt && appointment.cancellationReason && <p className="mt-2 text-xs text-rose-500">Motivo: {appointment.cancellationReason}</p>}
+  </div>;
+}
+
+// Inline click-to-edit for a recurrence's OWN "valor mensal" (serviceId +
+// price) - same click-to-edit interaction as AppointmentRow's date editor
+// above, but backed by PUT /api/recurring-schedules/[id]. This is a
+// DIFFERENT number from the OS's own item unitPrice shown in "Servicos
+// contratados" above; editing it never touches ServiceOrderItem,
+// ServiceOrder.totalAmount, or any Appointment (see that route's comment),
+// which is why - unlike REALIZADO_PRICE_EDIT_CONFIRM - no confirmation
+// dialog is needed here regardless of the OS's status.
+function RecurringScheduleSection({ schedule, services, reload }: { schedule: RecurringSchedule; services: Service[]; reload: () => Promise<void> }) {
+  const [editing, setEditing] = useState(false);
+  const [serviceId, setServiceId] = useState(schedule.serviceId);
+  const [price, setPrice] = useState(Number(schedule.price));
+  const [saving, setSaving] = useState(false);
+  const currentServiceName = services.find((s) => s.id === schedule.serviceId)?.name ?? "Servico";
+
+  async function save() {
+    setSaving(true);
+    try {
+      await api(`/api/recurring-schedules/${schedule.id}`, { method: "PUT", body: JSON.stringify({ serviceId, price }) });
+      await reload();
+      setEditing(false);
+    } catch (err) {
+      alert(err instanceof Error ? err.message : "Erro ao salvar a recorrencia.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return <div className="rounded-2xl bg-slate-50 p-4">
+    <h4 className="font-black">Recorrencia</h4>
+    {editing
+      ? <div className="mt-2 flex flex-wrap items-center gap-2">
+          <select value={serviceId} onChange={(e) => setServiceId(e.target.value)} className="rounded border p-2 text-sm">{services.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</select>
+          <input type="number" min={0} step="0.01" value={price} onChange={(e) => setPrice(Number(e.target.value))} className="w-28 rounded border p-2 text-sm" aria-label="Valor mensal" />
+          <button type="button" disabled={saving} onClick={save} className="text-sm font-bold text-indigo-600 disabled:opacity-60">{saving ? "Salvando..." : "Salvar"}</button>
+          <button type="button" disabled={saving} onClick={() => { setEditing(false); setServiceId(schedule.serviceId); setPrice(Number(schedule.price)); }} className="text-sm font-bold text-slate-500 disabled:opacity-60">Cancelar edicao</button>
+        </div>
+      : <button type="button" onClick={() => setEditing(true)} className="mt-1 text-left text-sm font-bold text-slate-800 hover:text-indigo-600">{currentServiceName} - {money(schedule.price)} (editar)</button>}
+    <p className="mt-2 text-xs text-slate-500">Valor mensal e o total cobrado por mes pela recorrencia e nao representa o valor de cada atendimento - atendimentos ja realizados nao sao afetados.</p>
   </div>;
 }
 
@@ -1075,9 +1190,9 @@ function PrintOrder({ order, close }: { order: Order; close: () => void }) {
       <h3 className="text-xs font-black uppercase text-slate-400">{schedule ? `Atendimentos da recorrencia (${order.appointments.length})` : `Atendimentos (${order.appointments.length})`}</h3>
       <table className="report-table mt-2 w-full text-sm">
         <thead><tr><th className="border-b p-2 text-left">No</th><th className="border-b p-2 text-left">Data</th><th className="border-b p-2 text-left">Horario</th><th className="border-b p-2 text-left">Funcionario</th><th className="border-b p-2 text-left">Status</th><th className="border-b p-2 text-right">Valor</th></tr></thead>
-        <tbody>{order.appointments.map((a, index) => <tr key={a.id} className={a.cancelledAt ? "text-rose-500" : undefined}><td className="border-b p-2">{index + 1}</td><td className="border-b p-2">{dateOnlyLabel(a.date)}</td><td className="border-b p-2">{a.startTime} - {a.endTime}</td><td className="border-b p-2">{a.employee?.name || employeeNames}</td><td className="border-b p-2 font-bold">{a.cancelledAt ? "CANCELADO" : statusLabels[a.status] || a.status}</td><td className="border-b p-2 text-right">{money(order.totalAmount)}</td></tr>)}</tbody>
+        <tbody>{order.appointments.map((a, index) => <tr key={a.id} className={a.cancelledAt ? "text-rose-500" : undefined}><td className="border-b p-2">{index + 1}</td><td className="border-b p-2">{dateOnlyLabel(a.date)}</td><td className="border-b p-2">{a.startTime} - {a.endTime}</td><td className="border-b p-2">{a.employee?.name || employeeNames}</td><td className="border-b p-2 font-bold">{a.cancelledAt ? "CANCELADO" : statusLabels[a.status] || a.status}</td><td className="border-b p-2 text-right">{money(a.priceOverride ?? order.totalAmount)}</td></tr>)}</tbody>
       </table>
-      {schedule && <p className="mt-2 text-right text-sm"><b>{nonCancelledCount} atendimento(s) nao cancelado(s)</b> - valor por atendimento {money(order.totalAmount)} - <b>Total da recorrencia: {money(recurrenceTotal)}</b></p>}
+      {schedule && <p className="mt-2 text-right text-sm"><b>{nonCancelledCount} atendimento(s) nao cancelado(s)</b> - valor padrao por atendimento {money(order.totalAmount)} - <b>Total da recorrencia: {money(recurrenceTotal)}</b></p>}
     </section>}
 
     {order.notes && <section className="mt-4"><h3 className="text-xs font-black uppercase text-slate-400">Observacoes</h3><p className="mt-2 min-h-16 rounded-xl bg-slate-50 p-4 text-sm">{order.notes}</p></section>}
@@ -1169,9 +1284,9 @@ function CalendarView({ branchId, employees, clients, services, orders, reload, 
 
   return <div className="space-y-5">
     <div className="flex justify-between rounded-2xl border bg-white p-5"><h3 className="text-lg font-black capitalize">{cursor.toLocaleDateString("pt-BR", { month: "long", year: "numeric" })}</h3><div className="flex gap-2"><button onClick={() => setCursor(new Date(y, m - 1, 1))} className="rounded-xl border px-4 py-2 font-bold">Anterior</button><button onClick={() => setCursor(new Date(y, m + 1, 1))} className="rounded-xl border px-4 py-2 font-bold">Proximo</button></div></div>
-    <div className="grid gap-5 lg:grid-cols-3">
-      <div className="overflow-hidden rounded-2xl border bg-white lg:col-span-2"><div className="overflow-x-auto"><div className="min-w-full sm:min-w-[640px]"><div className="grid grid-cols-7 bg-slate-50 text-center text-xs font-black uppercase text-slate-500">{["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sab"].map((x) => <div key={x} className="py-3">{x}</div>)}</div><div className="grid grid-cols-7 auto-rows-[70px] sm:auto-rows-[90px] lg:auto-rows-[110px]">{days.map((d, i) => <button type="button" key={i} disabled={!d} onClick={() => d && setSelectedDay(d)} className={`border-t border-r p-2 text-left ${d === selectedDay ? "bg-indigo-50" : ""}`}>{d && <><b className="text-xs">{d}</b><div className="mt-2 space-y-1">{byDay(d).slice(0, 3).map((a) => <div key={a.id} className="truncate rounded-lg bg-indigo-100 p-1 text-[10px] font-bold text-indigo-700">{a.startTime} {a.order.client?.name}</div>)}{byDay(d).length > 3 && <p className="text-[10px] font-bold text-slate-400">+{byDay(d).length - 3}</p>}</div></>}</button>)}</div></div></div></div>
-      <div className="rounded-2xl border bg-white p-5"><h4 className="font-black capitalize">Atendimentos - {selectedLabel}</h4>{selectedAppointments.length === 0 && <p className="mt-4 text-sm text-slate-500">Nenhum atendimento neste dia.</p>}<div className="mt-4 space-y-3">{selectedAppointments.map((a) => <button type="button" key={a.id} onClick={() => openAppointment(a)} className="w-full rounded-xl border p-3 text-left hover:border-indigo-300 hover:bg-indigo-50/40"><div className="flex items-center justify-between"><b className="text-sm">{a.startTime} - {a.endTime}</b><Badge status={a.status} cancelledAt={a.cancelledAt} /></div><p className="mt-1 text-sm font-bold text-slate-800">{a.order.client?.name}</p><p className="text-xs text-slate-500">{a.order.items[0]?.service?.name}{a.order.items.length > 1 ? ` +${a.order.items.length - 1}` : ""} - OS {a.order.code}</p><p className="text-xs text-slate-500">{a.employee?.name || "Equipe da OS"} - {a.branch?.name}</p></button>)}</div></div>
+    <div className="grid gap-5 lg:grid-cols-5">
+      <div className="overflow-hidden rounded-2xl border bg-white lg:col-span-2"><div className="overflow-x-auto"><div className="min-w-full sm:min-w-[640px] lg:min-w-0"><div className="grid grid-cols-7 bg-slate-50 text-center text-xs font-black uppercase text-slate-500">{["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sab"].map((x) => <div key={x} className="py-3">{x}</div>)}</div><div className="grid grid-cols-7 auto-rows-[70px] sm:auto-rows-[90px] lg:auto-rows-[110px]">{days.map((d, i) => <button type="button" key={i} disabled={!d} onClick={() => d && setSelectedDay(d)} className={`border-t border-r p-2 text-left ${d === selectedDay ? "bg-indigo-50" : ""}`}>{d && <><b className="text-xs">{d}</b><div className="mt-2 space-y-1">{byDay(d).slice(0, 3).map((a) => <div key={a.id} className="truncate rounded-lg bg-indigo-100 p-1 text-[10px] font-bold text-indigo-700">{a.startTime} {a.order.client?.name}</div>)}{byDay(d).length > 3 && <p className="text-[10px] font-bold text-slate-400">+{byDay(d).length - 3}</p>}</div></>}</button>)}</div></div></div></div>
+      <div className="rounded-2xl border bg-white p-5 lg:col-span-3"><h4 className="font-black capitalize">Atendimentos - {selectedLabel}{selectedDay !== null && <span className="font-bold normal-case text-slate-500"> · {selectedAppointments.length} atendimento{selectedAppointments.length === 1 ? "" : "s"}</span>}</h4>{selectedAppointments.length === 0 && <p className="mt-4 text-sm text-slate-500">Nenhum atendimento neste dia.</p>}<div className="mt-4 space-y-3">{selectedAppointments.map((a) => <button type="button" key={a.id} onClick={() => openAppointment(a)} className="w-full rounded-xl border p-3 text-left hover:border-indigo-300 hover:bg-indigo-50/40"><div className="flex items-center justify-between"><b className="text-sm">{a.startTime} - {a.endTime}</b><Badge status={a.status} cancelledAt={a.cancelledAt} /></div><p className="mt-1 text-sm font-bold text-slate-800">{a.order.client?.name}</p><p className="text-xs text-slate-500">{a.order.items[0]?.service?.name}{a.order.items.length > 1 ? ` +${a.order.items.length - 1}` : ""} - OS {a.order.code}</p><p className="text-xs text-slate-500">{a.employee?.name || "Equipe da OS"} - {a.branch?.name}</p></button>)}</div></div>
     </div>
     {editingOrder && <OrderFormModal order={editingOrder} orders={orders} clients={clients} employees={employees} services={services} branchId={branchId} onClose={() => setEditingOrder(null)} reload={reloadCalendar} onSaved={handleOrderSaved} onEditClient={onEditClient} />}
   </div>;

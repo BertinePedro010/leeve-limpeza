@@ -27,13 +27,16 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
     // Value inherited per occurrence (see lib/order-total.ts) - if the
     // employee did 3 atendimentos this period on the same recurring OS, the
     // value they were responsible for is 3x order.totalAmount, not the OS's
-    // totalAmount once. Cancelled atendimentos never contribute value or
-    // count toward orderCount, same rule as everywhere else (see
+    // totalAmount once - UNLESS one of those atendimentos has its own
+    // priceOverride, in which case that one contributes its overridden value
+    // instead (same override-aware rule as everywhere else totalAmount is
+    // summed per occurrence). Cancelled atendimentos never contribute value
+    // or count toward orderCount, same rule as everywhere else (see
     // lib/order-status.ts). orderCount stays a distinct-OS count (how many
     // different OS this employee touched) - unrelated to the value fix,
     // still counted once per OS regardless of how many visits.
     const nonCancelled = appointments.filter((a) => a.cancelledAt === null);
-    const totalValue = nonCancelled.reduce((sum, a) => sum + Number(a.order.totalAmount), 0);
+    const totalValue = nonCancelled.reduce((sum, a) => sum + (a.priceOverride != null ? Number(a.priceOverride) : Number(a.order.totalAmount)), 0);
     const orderCount = new Set(nonCancelled.map((a) => a.order.id)).size;
 
     const summary = {

@@ -6,6 +6,7 @@ const SCREENS: Array<[string, string]> = [
   ["Dashboard", "Dashboard"],
   ["Clientes", "Clientes"],
   ["Ordens de Servico", "Ordens de Servico"],
+  ["Calendario", "Calendario"],
   ["Financeiro", "Financeiro"],
   ["Relatorios", "Relatorios"],
 ];
@@ -31,6 +32,29 @@ test.describe("Responsividade em 360px (sem scroll horizontal)", () => {
       expect(hasHorizontalOverflow, `${heading} tem scroll horizontal em 360px`).toBe(false);
     });
   }
+});
+
+test.describe("Calendario: proporcao das colunas no desktop", () => {
+  test.beforeEach(async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== "desktop", "roda só no projeto desktop");
+    await page.goto("/app");
+    await page.getByRole("button", { name: "Calendario", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Calendario", level: 2 })).toBeVisible();
+  });
+
+  test("a lista de atendimentos ocupa mais largura que o calendario, sem overflow horizontal", async ({ page }) => {
+    const monthGrid = page.locator(".grid.grid-cols-7").first();
+    const appointmentsPanel = page.getByRole("heading", { name: /Atendimentos/ }).locator("xpath=ancestor::div[contains(@class,'rounded-2xl')][1]");
+    await expect(monthGrid).toBeVisible({ timeout: 10000 });
+    await expect(appointmentsPanel).toBeVisible();
+
+    const gridWidth = await monthGrid.evaluate((el) => el.getBoundingClientRect().width);
+    const panelWidth = await appointmentsPanel.evaluate((el) => el.getBoundingClientRect().width);
+    expect(panelWidth).toBeGreaterThan(gridWidth); // list wider than calendar, per the new lg:grid-cols-5 (2/5 vs 3/5) ratio
+
+    const hasHorizontalOverflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth + 1);
+    expect(hasHorizontalOverflow, "Calendario tem scroll horizontal no desktop apos o redimensionamento").toBe(false);
+  });
 });
 
 test.describe("Estados de carregamento e erro", () => {

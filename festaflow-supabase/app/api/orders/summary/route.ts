@@ -9,14 +9,14 @@ import { ORDER_STATUS_VALUES } from "@/lib/order-status";
 // requested branch against the caller's own user_branches) and the same
 // "one row per OS" model as the listing itself - COUNT(*) on service_orders,
 // so an OS with several appointments still counts as exactly one OS. Value
-// is the OS's REAL total (see lib/order-total.ts: totalAmount x its own
-// non-cancelled appointment count) - the same rule app/api/dashboard's
-// loadOccurrences already established, generalized here from "per
-// occurrence, grouped by appointment status" to "per OS, grouped by OS
-// status". A plain groupBy can't express "count x totalAmount" (that needs
-// a join + per-order subquery), hence the raw SQL, same style as
-// loadOccurrences. Returns zeros (not an error) when the search term is
-// empty.
+// is the OS's REAL total (see lib/order-total.ts: each non-cancelled
+// appointment contributes its own price_override, falling back to the OS's
+// totalAmount) - the same rule app/api/dashboard's loadOccurrences already
+// established, generalized here from "per occurrence, grouped by
+// appointment status" to "per OS, grouped by OS status". A plain groupBy
+// can't express this (needs a join + per-order subquery), hence the raw
+// SQL, same style as loadOccurrences. Returns zeros (not an error) when the
+// search term is empty.
 const STATUSES = ORDER_STATUS_VALUES;
 
 export async function GET(request: Request) {
@@ -46,14 +46,14 @@ export async function GET(request: Request) {
     const grouped = branchIds.length === 0 ? [] : await prisma.$queryRaw<Array<{ status: string; count: number; value: number }>>(Prisma.sql`
       SELECT so.status::text AS status,
              COUNT(*)::int AS count,
-             COALESCE(SUM(so.total_amount * COALESCE(ac.appt_count, 0)), 0)::float8 AS value
+             COALESCE(SUM(av.value), 0)::float8 AS value
       FROM service_orders so
       JOIN clients c ON c.id = so.client_id
       LEFT JOIN LATERAL (
-        SELECT COUNT(*)::int AS appt_count
+        SELECT COALESCE(SUM(COALESCE(a.price_override, so.total_amount)), 0) AS value
         FROM appointments a
         WHERE a.order_id = so.id AND a.cancelled_at IS NULL
-      ) ac ON true
+      ) av ON true
       WHERE so.deleted_at IS NULL
         AND so.cancelled_at IS NULL
         AND so.branch_id = ANY(ARRAY[${Prisma.join(branchIds)}]::uuid[])

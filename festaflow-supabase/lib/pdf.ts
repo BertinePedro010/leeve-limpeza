@@ -31,7 +31,7 @@ const orderPdfInclude = {
   appointments: { include: { employee: { select: { id: true, name: true } } }, orderBy: [{ date: "asc" as const }, { startTime: "asc" as const }] },
   // At most one active recurrence per OS in practice, but selected as a list
   // (matches the schema's 1:N) so a historical/inactive row never hides data.
-  recurringSchedules: { select: { id: true, frequency: true, interval: true, dayOfWeek: true, daysOfWeek: true, dayOfMonth: true, startDate: true, endDate: true, active: true, price: true } },
+  recurringSchedules: { select: { id: true, serviceId: true, frequency: true, interval: true, dayOfWeek: true, daysOfWeek: true, dayOfMonth: true, startDate: true, endDate: true, active: true, price: true } },
 } satisfies Prisma.ServiceOrderInclude;
 
 export type OrderForPdf = Prisma.ServiceOrderGetPayload<{ include: typeof orderPdfInclude }>;
@@ -166,7 +166,7 @@ export function buildOrderPdf(order: OrderForPdf): Promise<Buffer> {
       doc.moveDown(0.3);
       drawAppointmentsTableHeader(doc);
 
-      let nonCancelledCount = 0;
+      const nonCancelledForTotal: Array<{ priceOverride: Prisma.Decimal | null }> = [];
       order.appointments.forEach((a, index) => {
         // Fixed per-row height at font size 9 with a little padding - matches
         // what .text() below actually consumes, so the page-break check
@@ -178,14 +178,17 @@ export function buildOrderPdf(order: OrderForPdf): Promise<Buffer> {
         const y = doc.y;
         const statusTxt = orderStatusLabel(a);
         const who = a.employee?.name || employeeNames;
-        if (!a.cancelledAt) nonCancelledCount += 1;
+        if (!a.cancelledAt) nonCancelledForTotal.push({ priceOverride: a.priceOverride });
         doc.fillColor(a.cancelledAt ? "#999" : "#000");
         doc.text(String(index + 1), APPT_COLS[0].x, y, { width: APPT_COLS[0].width });
         doc.text(dateLabel(a.date), APPT_COLS[1].x, y, { width: APPT_COLS[1].width });
         doc.text(`${a.startTime}-${a.endTime}`, APPT_COLS[2].x, y, { width: APPT_COLS[2].width });
         doc.text(who, APPT_COLS[3].x, y, { width: APPT_COLS[3].width });
         doc.text(statusTxt, APPT_COLS[4].x, y, { width: APPT_COLS[4].width });
-        doc.text(money(order.totalAmount), APPT_COLS[5].x, y, { width: APPT_COLS[5].width, align: "right" });
+        // This occurrence's own priceOverride (see prisma/schema.prisma)
+        // when set, else the OS's own totalAmount - same fallback rule as
+        // lib/order-total.ts, applied here per row instead of summed.
+        doc.text(money(a.priceOverride ?? order.totalAmount), APPT_COLS[5].x, y, { width: APPT_COLS[5].width, align: "right" });
         doc.fillColor("#000");
         doc.y = y + rowHeight;
       });
@@ -194,11 +197,12 @@ export function buildOrderPdf(order: OrderForPdf): Promise<Buffer> {
       if (schedule) {
         // Same rule the dashboard uses for "valor de ocorrencias" (see
         // app/api/dashboard/route.ts loadOccurrences): each non-cancelled
-        // appointment inherits the OS's total_amount once. Not a new
-        // financial rule - just applied here for the recurrence's own total.
-        const recurrenceTotal = orderRealTotal(order.totalAmount, nonCancelledCount);
+        // appointment inherits the OS's total_amount once, unless it has its
+        // own priceOverride (see lib/order-total.ts). Not a new financial
+        // rule - just applied here for the recurrence's own total.
+        const recurrenceTotal = orderRealTotal(order.totalAmount, nonCancelledForTotal);
         doc.font("Helvetica").fontSize(10);
-        doc.text(`${nonCancelledCount} atendimento(s) nao cancelado(s) - valor por atendimento: ${money(order.totalAmount)}`);
+        doc.text(`${nonCancelledForTotal.length} atendimento(s) nao cancelado(s) - valor padrao por atendimento: ${money(order.totalAmount)}`);
         doc.font("Helvetica-Bold").text(`Total da recorrencia: ${money(recurrenceTotal)}`);
         doc.moveDown();
       }

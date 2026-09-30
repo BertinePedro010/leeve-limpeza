@@ -11,15 +11,18 @@ type OccurrenceBucket = { count: number; total: number };
 // A "ocorrencia" agendada = uma linha de `appointments` (data adicional,
 // atendimento manual, ou ocorrencia de recorrencia - todas vinculadas a uma
 // unica ServiceOrder). O valor de cada ocorrencia e HERDADO da OS pai
-// (service_orders.total_amount) - nao existe coluna de valor no Appointment.
+// (service_orders.total_amount) - EXCETO quando aquela ocorrencia tem seu
+// proprio a.price_override (ver prisma/schema.prisma Appointment.priceOverride),
+// caso em que ela contribui com esse valor em vez do total_amount da OS.
 //
 // Uma unica query agrupada por status: cada appointment entra UMA vez e
-// contribui com o total_amount da sua OS uma vez (JOIN N:1 appointment->order,
-// sem fan-out). OS soft-deletada e excluida (o.deleted_at IS NULL). Escopo por
-// filial via a.branch_id (indice idx_appointments_branch_date). Um atendimento
-// cancelado (a.cancelled_at IS NOT NULL) nao entra em nenhum bucket - o status
-// (agendado/realizado) so e considerado quando NAO cancelado, exatamente como
-// o resumo "Por Cliente" e os demais relatorios (ver lib/order-status.ts).
+// contribui com COALESCE(a.price_override, o.total_amount) uma vez (JOIN N:1
+// appointment->order, sem fan-out). OS soft-deletada e excluida (o.deleted_at
+// IS NULL). Escopo por filial via a.branch_id (indice
+// idx_appointments_branch_date). Um atendimento cancelado (a.cancelled_at IS
+// NOT NULL) nao entra em nenhum bucket - o status (agendado/realizado) so e
+// considerado quando NAO cancelado, exatamente como o resumo "Por Cliente" e
+// os demais relatorios (ver lib/order-status.ts).
 async function loadOccurrences(canView: boolean, branchIds: string[]): Promise<{
   total: OccurrenceBucket;
   scheduled: OccurrenceBucket;
@@ -32,7 +35,7 @@ async function loadOccurrences(canView: boolean, branchIds: string[]): Promise<{
   const rows = await prisma.$queryRaw<Array<{ status: string; count: number; total: number }>>(Prisma.sql`
     SELECT a.status::text AS status,
            COUNT(*)::int AS count,
-           COALESCE(SUM(o.total_amount), 0)::float8 AS total
+           COALESCE(SUM(COALESCE(a.price_override, o.total_amount)), 0)::float8 AS total
     FROM appointments a
     JOIN service_orders o ON o.id = a.order_id
     WHERE o.deleted_at IS NULL
