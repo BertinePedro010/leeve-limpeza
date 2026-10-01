@@ -1,10 +1,12 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import { Prisma } from "@prisma/client";
 import { sumRevenue } from "@/lib/billing";
 import { displayOrderStatus, orderStatusLabel } from "@/lib/order-status";
 import { hasStructuredClientAddress, formatClientAddressLine } from "@/lib/client-address";
 import { hasStructuredOrderAddress, formatOrderAddressLine, evaluateClientAddress, missingAddressFieldLabels, clientAddressErrorMessage, orderAddressSnapshot } from "@/lib/order-address";
 import { normalizeDocument, normalizeClientName, isDuplicateClient, clientMatchesSearch } from "@/lib/client-dedupe";
+import { resolveMonthRange } from "@/lib/reports";
+import { AuthzError } from "@/lib/authz";
 
 describe("sumRevenue (lib/billing.ts)", () => {
   const base = { type: "receita" as const, status: "pago" as const, amount: new Prisma.Decimal(100), deletedAt: null as Date | null };
@@ -120,5 +122,42 @@ describe("client dedupe rules (lib/client-dedupe.ts)", () => {
     expect(clientMatchesSearch(client, "45678901000123")).toBe(true);
     expect(clientMatchesSearch(client, "999")).toBe(false);
     expect(clientMatchesSearch(client, "")).toBe(true);
+  });
+});
+
+describe("resolveMonthRange (lib/reports.ts)", () => {
+  afterEach(() => { vi.useRealTimers(); });
+
+  it("defaults to the current month/year when month/year are absent", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 8, 15)); // 15/Set/2026
+    const { year, month, from, to } = resolveMonthRange(new URL("http://x/api/dashboard"));
+    expect(year).toBe(2026);
+    expect(month).toBe(9);
+    expect(from).toEqual(new Date(2026, 8, 1));
+    expect(to).toEqual(new Date(2026, 8, 30, 23, 59, 59, 999));
+  });
+
+  it("uses the explicit month/year query params when given", () => {
+    const { year, month, from, to } = resolveMonthRange(new URL("http://x/api/dashboard?month=2&year=2025"));
+    expect(year).toBe(2025);
+    expect(month).toBe(2);
+    expect(from).toEqual(new Date(2025, 1, 1));
+    expect(to).toEqual(new Date(2025, 1, 28, 23, 59, 59, 999)); // Fev/2025 (nao bissexto)
+  });
+
+  it("handles the December -> January month rollover correctly", () => {
+    const { from, to } = resolveMonthRange(new URL("http://x/api/dashboard?month=12&year=2026"));
+    expect(from).toEqual(new Date(2026, 11, 1));
+    expect(to).toEqual(new Date(2026, 11, 31, 23, 59, 59, 999));
+  });
+
+  it("rejects an out-of-range month instead of silently defaulting", () => {
+    expect(() => resolveMonthRange(new URL("http://x/api/dashboard?month=13&year=2026"))).toThrow(AuthzError);
+    expect(() => resolveMonthRange(new URL("http://x/api/dashboard?month=0&year=2026"))).toThrow(AuthzError);
+  });
+
+  it("rejects a non-numeric year instead of silently defaulting", () => {
+    expect(() => resolveMonthRange(new URL("http://x/api/dashboard?month=5&year=abc"))).toThrow(AuthzError);
   });
 });

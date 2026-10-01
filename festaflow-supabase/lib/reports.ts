@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/prisma";
-import { requireGlobalAdmin, resolveBranchFilter, type AuthContext } from "@/lib/authz";
+import { AuthzError, requireGlobalAdmin, resolveBranchFilter, type AuthContext } from "@/lib/authz";
 
 function startOfDay(d: Date) {
   return new Date(d.getFullYear(), d.getMonth(), d.getDate());
@@ -37,6 +37,39 @@ export function resolvePeriod(url: URL): { from: Date; to: Date } {
     if (from && to) return { from: startOfDay(new Date(from)), to: endOfDay(new Date(to)) };
   }
   return { from: startOfDay(now), to: endOfDay(now) };
+}
+
+/**
+ * Dashboard period selector: `month` (1-12) + `year`, defaulting to the
+ * current month/year when either is absent - this is what makes "the
+ * current month" the Dashboard's initial view without the frontend having
+ * to compute or send a default itself. Unlike resolvePeriod's day-level
+ * presets above (used by /api/reports), this is always a *whole calendar
+ * month* range, selected explicitly by two numbers instead of a preset
+ * string - the Dashboard's Anterior/Proximo navigation needs an exact
+ * month+year round-trip, not a "mes atual" vs "mes anterior" choice.
+ * Malformed input (non-numeric, out of range) throws AuthzError(422) rather
+ * than silently falling back to "hoje" - a caller passing a garbled month
+ * should see an error, not a dashboard quietly showing the wrong period.
+ */
+export function resolveMonthRange(url: URL): { year: number; month: number; from: Date; to: Date } {
+  const now = new Date();
+  const monthParam = url.searchParams.get("month");
+  const yearParam = url.searchParams.get("year");
+  const month = monthParam === null ? now.getMonth() + 1 : Number(monthParam);
+  const year = yearParam === null ? now.getFullYear() : Number(yearParam);
+  if (!Number.isInteger(month) || month < 1 || month > 12) {
+    throw new AuthzError("Mes invalido: informe um valor entre 1 e 12.", 422);
+  }
+  if (!Number.isInteger(year) || year < 2000 || year > 2100) {
+    throw new AuthzError("Ano invalido.", 422);
+  }
+  return {
+    year,
+    month,
+    from: new Date(year, month - 1, 1),
+    to: new Date(year, month, 0, 23, 59, 59, 999),
+  };
 }
 
 /**

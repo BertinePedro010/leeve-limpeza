@@ -190,6 +190,44 @@ async function main() {
     data: { branchId: branchB.id, type: "receita", category: "Servicos", description: "OS OS-TEST-0005", amount: 699.0, dueDate: monthsAgo(0, 8), paidAt: monthsAgo(0, 8), status: "pago", isAutoRevenue: false },
   });
 
+  // OS 8/9 - EXCLUSIVAMENTE para o teste de filtro de mes/detalhamento por
+  // tipo de OS do dashboard (tests/e2e/dashboard-month-filter.spec.ts). Datas
+  // no "mes anterior" (nunca no mes atual) para ficarem imunes aos
+  // atendimentos da recorrencia semanal abaixo, cujas datas (hoje+7/14/21
+  // dias) podem cair no mes atual OU no seguinte dependendo do dia do mes em
+  // que os testes rodam - usando o mes anterior, estas duas OS sao as UNICAS
+  // linhas de appointments daquele mes para a Filial Teste Norte, tornando o
+  // total esperado deterministico. Categorias diferentes (Residencial vs.
+  // Especializada) para exercitar "Resumo por tipo de OS". Novas OS, novos
+  // codigos - nao retoca OS-TEST-0001..0007 nem seus appointments (inexistentes
+  // de propósito nelas, ver comentários acima) para não alterar o fixture que
+  // outros specs já dependem no formato atual.
+  const osDashboardMesAnteriorA1 = await prisma.serviceOrder.create({
+    data: {
+      branchId: branchA.id, code: "OS-TEST-0008", clientId: clientePfA.id,
+      eventDate: monthsAgo(1, 8), startTime: "09:00", endTime: "11:00",
+      location: "Rua das Acácias, 123 - Vitória - ES", status: "realizado",
+      totalAmount: 189.9,
+      items: { create: [{ serviceId: servicoA1.id, quantity: 1, unitPrice: 189.9 }] },
+      employees: { create: [{ employeeId: employeeA1.id }] },
+    },
+  });
+  await prisma.appointment.create({
+    data: { orderId: osDashboardMesAnteriorA1.id, branchId: branchA.id, employeeId: employeeA1.id, date: monthsAgo(1, 8), startTime: "09:00", endTime: "11:00", status: "realizado" },
+  });
+  const osDashboardMesAnteriorA2 = await prisma.serviceOrder.create({
+    data: {
+      branchId: branchA.id, code: "OS-TEST-0009", clientId: clientePjA.id,
+      eventDate: monthsAgo(1, 14), startTime: "08:00", endTime: "12:00",
+      location: "Av. Central, 500 - Vitória - ES", status: "agendado",
+      totalAmount: 549.99,
+      items: { create: [{ serviceId: servicoA2.id, quantity: 1, unitPrice: 549.99 }] },
+    },
+  });
+  await prisma.appointment.create({
+    data: { orderId: osDashboardMesAnteriorA2.id, branchId: branchA.id, date: monthsAgo(1, 14), startTime: "08:00", endTime: "12:00", status: "agendado" },
+  });
+
   // Lançamentos financeiros manuais em meses diferentes, pago/pendente,
   // receita/despesa, com centavos - para bater dashboard x relatórios x banco.
   await prisma.transaction.createMany({

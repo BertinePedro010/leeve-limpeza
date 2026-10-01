@@ -32,7 +32,8 @@ type RecurringSchedule = { id: string; serviceId: string; frequency: "weekly" | 
 type Order = { id: string; code: string; clientId: string; client?: Client; branch?: Branch; eventDate: string; startTime: string; endTime: string; location: string; addressZip?: string | null; addressStreet?: string | null; addressNumber?: string | null; addressNeighborhood?: string | null; addressCity?: string | null; addressState?: string | null; addressReference?: string | null; status: string; cancelledAt?: string | null; cancellationReason?: string | null; paymentMethod?: string | null; paymentMethodLegacy?: string | null; notes?: string; signatureName?: string; signatureDate?: string; totalAmount: string | number; total: string | number; items: OrderItem[]; employees: OrderEmployee[]; appointments: Appointment[]; recurringSchedules?: RecurringSchedule[] };
 type Transaction = { id: string; type: "receita" | "despesa"; category: string; description: string; amount: string | number; dueDate: string; paidAt?: string; status: "pago" | "pendente"; orderId?: string; paymentMethod?: string | null; isAutoRevenue?: boolean };
 type OccurrenceBucket = { count: number; total: number };
-type Dashboard = { revenue: number; expenses: number; profit: number; receivable: number; payable: number; clients: number; employees: number; services: number; orders: number; activeOrders: number; completedOrders: number; principalOrders: { count: number }; occurrences: { total: OccurrenceBucket; scheduled: OccurrenceBucket; finalized: OccurrenceBucket }; upcomingOrders: Order[] };
+type CategoryBucket = { category: string; count: number; total: number };
+type Dashboard = { period: { year: number; month: number }; revenue: number; expenses: number; profit: number; receivable: number; payable: number; clients: number; employees: number; services: number; orders: number; activeOrders: number; completedOrders: number; principalOrders: { count: number }; occurrences: { total: OccurrenceBucket; scheduled: OccurrenceBucket; finalized: OccurrenceBucket }; occurrencesByCategory: CategoryBucket[]; upcomingOrders: Order[] };
 type Me = { id: string; name: string; email: string; role: string; allowedModules: string[]; isGlobalAdmin: boolean };
 type SendChannel = "email" | "whatsapp";
 
@@ -73,6 +74,11 @@ function SaasAppShell() {
   const [orders, setOrders] = useState<Order[]>([]);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [dashboard, setDashboard] = useState<Dashboard | null>(null);
+  // Mes/ano selecionado no Dashboard (dia 1 do mes, hora zero - so o
+  // mes/ano importam). Default = mes atual; "Anterior"/"Proximo" andam um
+  // mes por vez, mesmo padrao ja usado pelo cursor do Calendario (ver
+  // CalendarView mais abaixo).
+  const [dashboardPeriod, setDashboardPeriod] = useState(() => { const n = new Date(); return new Date(n.getFullYear(), n.getMonth(), 1); });
   const [message, setMessage] = useState("");
   const [me, setMe] = useState<Me | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -84,6 +90,14 @@ function SaasAppShell() {
   const goEditClient = useCallback((clientId: string) => { setPendingClientEditId(clientId); setTab("clients"); }, []);
   const activeBranchIdRef = useRef(activeBranchId);
   useEffect(() => { activeBranchIdRef.current = activeBranchId; }, [activeBranchId]);
+  // Mirrors activeBranchIdRef's role below: lets the period-change effect
+  // detect that a NEWER "Anterior"/"Proximo" click already superseded its
+  // own in-flight request, so a slow response for month M can never land on
+  // screen after a faster response for month M+1 already did (stale-period
+  // race - two clicks in quick succession would otherwise resolve out of
+  // order and show mismatched period label vs totals).
+  const dashboardPeriodRef = useRef(dashboardPeriod);
+  useEffect(() => { dashboardPeriodRef.current = dashboardPeriod; }, [dashboardPeriod]);
   useEffect(() => { api<Me>("/api/me").then(setMe).catch(() => {}); }, []);
 
   // Each fetch is caught independently - a user restricted from one module
@@ -91,6 +105,13 @@ function SaasAppShell() {
   // .catch(), Promise.all would reject as a whole and leave every OTHER
   // module's data empty too, breaking the whole shell for a partially
   // restricted user instead of just hiding the one module they can't use.
+  // `dashboardQs` adds &month=&year= (derivados de dashboardPeriod) so every
+  // dashboard fetch - aqui, no refresh de financeiro e no effect dedicado de
+  // periodo abaixo - sempre pede exatamente o mes/ano selecionado na tela.
+  function dashboardQs(branchId: string) {
+    return `?branchId=${branchId}&month=${dashboardPeriod.getMonth() + 1}&year=${dashboardPeriod.getFullYear()}`;
+  }
+
   async function loadAll() {
     const requestedBranchId = activeBranchId;
     if (!requestedBranchId) return;
@@ -101,11 +122,36 @@ function SaasAppShell() {
       api<Service[]>(`/api/services${qs}`).catch(() => [] as Service[]),
       api<Order[]>(`/api/orders${qs}`).catch(() => [] as Order[]),
       api<Transaction[]>(`/api/transactions${qs}`).catch(() => [] as Transaction[]),
-      api<Dashboard>(`/api/dashboard${qs}`).catch(() => null),
+      api<Dashboard>(`/api/dashboard${dashboardQs(requestedBranchId)}`).catch(() => null),
     ]);
     if (activeBranchIdRef.current !== requestedBranchId) return; // a newer branch switch already superseded this fetch
     setClients(c); setEmployees(e); setServices(s); setOrders(o); setTransactions(t); setDashboard(d);
   }
+
+  // Troca de mes/ano no Dashboard: refaz so o fetch do dashboard (nunca o
+  // loadAll completo) - clients/employees/services/orders/transactions nao
+  // dependem do periodo selecionado, entao recarrega-los a cada "Anterior"/
+  // "Proximo" seria trabalho (e payload) desnecessario. Depende SO de
+  // dashboardPeriod (nao de activeBranchId) e pula a primeira renderizacao -
+  // a troca de filial ja dispara loadAll() (useEffect abaixo), que busca o
+  // dashboard para o periodo atual; sem o guard de "primeira renderizacao"
+  // os dois effects disputariam a mesma requisicao em paralelo no mount e
+  // em toda troca de filial.
+  const dashboardPeriodMounted = useRef(false);
+  useEffect(() => {
+    if (!dashboardPeriodMounted.current) { dashboardPeriodMounted.current = true; return; }
+    const requestedBranchId = activeBranchId;
+    if (!requestedBranchId) return;
+    const requestedPeriod = dashboardPeriod;
+    api<Dashboard>(`/api/dashboard${dashboardQs(requestedBranchId)}`).then((d) => {
+      // Both guards matter: branch may have changed mid-flight (existing
+      // pattern), AND a faster response for a later "Anterior"/"Proximo"
+      // click may have already resolved and been applied - without the
+      // second check, this slower/older response would overwrite it.
+      if (activeBranchIdRef.current === requestedBranchId && dashboardPeriodRef.current === requestedPeriod) setDashboard(d);
+    }).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dashboardPeriod]);
 
   // Refreshes Financeiro/Dashboard in the background after an OS save -
   // never awaited by the caller. Billing sync (lib/billing.ts) can change
@@ -120,7 +166,7 @@ function SaasAppShell() {
     const qs = `?branchId=${requestedBranchId}`;
     Promise.all([
       api<Transaction[]>(`/api/transactions${qs}`).catch(() => null),
-      api<Dashboard>(`/api/dashboard${qs}`).catch(() => null),
+      api<Dashboard>(`/api/dashboard${dashboardQs(requestedBranchId)}`).catch(() => null),
     ]).then(([t, d]) => {
       if (activeBranchIdRef.current !== requestedBranchId) return;
       if (t) setTransactions(t);
@@ -164,7 +210,7 @@ function SaasAppShell() {
   return <div className="flex h-screen overflow-hidden bg-slate-50 text-slate-800">
     {sidebarOpen && <div onClick={() => setSidebarOpen(false)} className="fixed inset-0 z-30 bg-slate-950/60 lg:hidden" />}
     <aside className={`no-print fixed inset-y-0 left-0 z-40 flex w-72 flex-col overflow-y-auto bg-slate-950 text-slate-300 transition-transform duration-200 lg:static lg:translate-x-0 ${sidebarOpen ? "translate-x-0" : "-translate-x-full"}`}><div className="flex items-center justify-between border-b border-slate-800 p-6"><div><h1 className="text-2xl font-black text-white">LeeveLimpeza</h1><p className="text-xs text-slate-500">Supabase PostgreSQL</p></div><button onClick={() => setSidebarOpen(false)} aria-label="Fechar menu" className="rounded-lg p-1 text-slate-500 hover:bg-slate-900 hover:text-white lg:hidden">✕</button></div><div className="border-b border-slate-800 py-4"><BranchSwitcher /></div><nav className="flex-1 space-y-1 overflow-y-auto p-4">{visibleNav.map(([id, label]) => <button key={id} onClick={() => { setTab(id); setSidebarOpen(false); }} className={`w-full rounded-xl px-4 py-3 text-left text-sm font-bold transition ${tab === id ? "bg-indigo-600 text-white" : "text-slate-400 hover:bg-slate-900 hover:text-white"}`}>{label}</button>)}</nav><div className="border-t border-slate-800 p-4"><button onClick={logout} className="w-full rounded-xl border border-slate-800 py-2 text-xs font-black uppercase text-slate-400 hover:bg-slate-900">Sair</button></div></aside>
-    <main className="flex-1 overflow-y-auto"><header className="no-print sticky top-0 z-20 border-b border-slate-200 bg-white/90 px-4 py-4 backdrop-blur lg:px-8"><div className="flex flex-wrap items-center justify-between gap-3"><div className="flex items-center gap-3"><button onClick={() => setSidebarOpen(true)} aria-label="Abrir menu" className="rounded-xl border border-slate-200 p-2 text-slate-600 lg:hidden">☰</button><div><h2 className="text-xl font-black">{visibleNav.find(([id]) => id === tab)?.[1]}</h2><p className="text-xs font-bold uppercase tracking-wide text-indigo-600">{activeBranch?.name || "Selecione uma filial"}</p>{message && <p className="text-xs text-rose-600">{message}</p>}</div></div>{canUseModule(me, "orders") && <button onClick={() => setTab("orders")} className="rounded-xl bg-indigo-600 px-4 py-2 text-sm font-black text-white">Nova OS</button>}</div></header><section className="p-4 lg:p-8">{tab === "dashboard" && <DashboardView dashboard={dashboard} />}{tab === "clients" && <ClientsView data={clients} branchId={activeBranchId} reload={loadAll} loading={dataLoading} openClientId={pendingClientEditId} onOpenClientHandled={() => setPendingClientEditId(null)} />}{tab === "employees" && <EmployeesView data={employees} branchId={activeBranchId} reload={loadAll} loading={dataLoading} />}{tab === "services" && <ServicesView data={services} branchId={activeBranchId} reload={loadAll} loading={dataLoading} />}{tab === "orders" && <OrdersView orders={orders} clients={clients} employees={employees} services={services} branchId={activeBranchId} reload={loadAll} onOrderSaved={applyOrderSaved} loading={dataLoading} onEditClient={goEditClient} />}{tab === "calendar" && <CalendarView branchId={activeBranchId} employees={employees} clients={clients} services={services} orders={orders} reload={loadAll} onOrderSaved={applyOrderSaved} onEditClient={goEditClient} />}{tab === "finance" && <FinanceView data={transactions} orders={orders} employees={employees} clients={clients} services={services} branchId={activeBranchId} reload={loadAll} onOrderSaved={applyOrderSaved} loading={dataLoading} onEditClient={goEditClient} />}{tab === "reports" && <ReportsView employees={employees} services={services} isGlobalAdmin={!!me?.isGlobalAdmin} />}{tab === "training" && <TrainingView />}{tab === "branches" && <BranchesView />}{tab === "users" && <UsersView />}</section></main>
+    <main className="flex-1 overflow-y-auto"><header className="no-print sticky top-0 z-20 border-b border-slate-200 bg-white/90 px-4 py-4 backdrop-blur lg:px-8"><div className="flex flex-wrap items-center justify-between gap-3"><div className="flex items-center gap-3"><button onClick={() => setSidebarOpen(true)} aria-label="Abrir menu" className="rounded-xl border border-slate-200 p-2 text-slate-600 lg:hidden">☰</button><div><h2 className="text-xl font-black">{visibleNav.find(([id]) => id === tab)?.[1]}</h2><p className="text-xs font-bold uppercase tracking-wide text-indigo-600">{activeBranch?.name || "Selecione uma filial"}</p>{message && <p className="text-xs text-rose-600">{message}</p>}</div></div>{canUseModule(me, "orders") && <button onClick={() => setTab("orders")} className="rounded-xl bg-indigo-600 px-4 py-2 text-sm font-black text-white">Nova OS</button>}</div></header><section className="p-4 lg:p-8">{tab === "dashboard" && <DashboardView dashboard={dashboard} period={dashboardPeriod} onChangePeriod={setDashboardPeriod} />}{tab === "clients" && <ClientsView data={clients} branchId={activeBranchId} reload={loadAll} loading={dataLoading} openClientId={pendingClientEditId} onOpenClientHandled={() => setPendingClientEditId(null)} />}{tab === "employees" && <EmployeesView data={employees} branchId={activeBranchId} reload={loadAll} loading={dataLoading} />}{tab === "services" && <ServicesView data={services} branchId={activeBranchId} reload={loadAll} loading={dataLoading} />}{tab === "orders" && <OrdersView orders={orders} clients={clients} employees={employees} services={services} branchId={activeBranchId} reload={loadAll} onOrderSaved={applyOrderSaved} loading={dataLoading} onEditClient={goEditClient} />}{tab === "calendar" && <CalendarView branchId={activeBranchId} employees={employees} clients={clients} services={services} orders={orders} reload={loadAll} onOrderSaved={applyOrderSaved} onEditClient={goEditClient} />}{tab === "finance" && <FinanceView data={transactions} orders={orders} employees={employees} clients={clients} services={services} branchId={activeBranchId} reload={loadAll} onOrderSaved={applyOrderSaved} loading={dataLoading} onEditClient={goEditClient} />}{tab === "reports" && <ReportsView employees={employees} services={services} isGlobalAdmin={!!me?.isGlobalAdmin} />}{tab === "training" && <TrainingView />}{tab === "branches" && <BranchesView />}{tab === "users" && <UsersView />}</section></main>
   </div>;
 }
 
@@ -194,14 +240,17 @@ const EMPTY_BUCKET: OccurrenceBucket = { count: 0, total: 0 };
 // Datas adicionais, atendimentos e recorrencias sao TODOS `appointments`
 // (ocorrencias) - por isso a contagem aqui e por ocorrencia, nao por OS. A OS
 // principal continua num indicador proprio (quantidade de ServiceOrder).
+// Filtrada pelo periodo selecionado no Dashboard (ver loadOccurrences em
+// app/api/dashboard/route.ts) - diferente de principalOrders (ServiceOrder
+// aberta agora, nunca filtrada por mes, ver nota em DashboardView abaixo).
 function OrderTotalsSection({ dashboard }: { dashboard: Dashboard }) {
   const occ = dashboard.occurrences ?? { total: EMPTY_BUCKET, scheduled: EMPTY_BUCKET, finalized: EMPTY_BUCKET };
   return <div className="rounded-2xl border bg-white p-5 shadow-sm">
     <div className="flex flex-wrap items-baseline justify-between gap-2">
-      <h3 className="font-black">Totais de ocorrencias da filial</h3>
+      <h3 className="font-black">Totais de ocorrencias — {periodLabel(dashboard.period)}</h3>
       <p className="text-xs font-bold text-slate-500">OS principais: <span className="font-black text-slate-800">{dashboard.principalOrders?.count ?? 0}</span></p>
     </div>
-    <p className="mt-1 text-xs text-slate-400">Cada data/atendimento (principal, adicional ou recorrencia) conta como 1 ocorrencia e herda o valor da OS. Canceladas e OS excluidas ficam de fora.</p>
+    <p className="mt-1 text-xs text-slate-400">Cada data/atendimento (principal, adicional ou recorrencia) conta como 1 ocorrencia e herda o valor da OS. Canceladas e OS excluidas ficam de fora. Valores do periodo selecionado acima.</p>
     <div className="mt-4 grid gap-4 md:grid-cols-3">
       <OccurrenceCard label="Total de ocorrencias" bucket={occ.total} tone="slate" />
       <OccurrenceCard label="OS Agendadas" bucket={occ.scheduled} tone="blue" />
@@ -210,9 +259,69 @@ function OrderTotalsSection({ dashboard }: { dashboard: Dashboard }) {
   </div>;
 }
 
-function DashboardView({ dashboard }: { dashboard: Dashboard | null }) {
-  if (!dashboard) return <p>Carregando...</p>;
-  return <div className="space-y-6"><div className="grid gap-4 md:grid-cols-4"><Stat label="Faturamento" value={money(dashboard.revenue)} /><Stat label="Lucro" value={money(dashboard.profit)} tone="emerald" /><Stat label="OS ativas" value={dashboard.activeOrders} tone="amber" /><Stat label="Eventos concluidos" value={dashboard.completedOrders} /></div><OrderTotalsSection dashboard={dashboard} /><div className="grid gap-6 lg:grid-cols-3"><div className="rounded-2xl border bg-white p-6 shadow-sm lg:col-span-2"><h3 className="font-black">Resumo financeiro</h3><div className="mt-5 grid gap-4 md:grid-cols-2"><Stat label="Despesas" value={money(dashboard.expenses)} tone="rose" /><Stat label="Contas a receber" value={money(dashboard.receivable)} /><Stat label="Contas a pagar" value={money(dashboard.payable)} tone="amber" /><Stat label="Eventos" value={dashboard.orders} /></div></div><div className="rounded-2xl border bg-white p-6 shadow-sm"><h3 className="font-black">Proximos eventos</h3><div className="mt-4 space-y-3">{dashboard.upcomingOrders.map((o) => <div key={o.id} className="rounded-xl border p-3"><div className="flex justify-between"><b>{o.code}</b><Badge status={o.status} /></div><p className="mt-1 text-xs text-slate-500">{new Date(o.eventDate).toLocaleDateString("pt-BR")} - {o.client?.name}</p></div>)}</div></div></div></div>;
+// Tipo de OS = Service.category (nao existe um campo de "tipo" proprio -
+// mesma categoria ja usada em Servicos/Relatorios). Uma ocorrencia com
+// servicos de categorias diferentes entra so na categoria do primeiro
+// servico contratado (ver loadOccurrencesByCategory em
+// app/api/dashboard/route.ts) - nunca duplicada entre categorias.
+function OsTypeBreakdownSection({ dashboard }: { dashboard: Dashboard }) {
+  const rows = dashboard.occurrencesByCategory ?? [];
+  return <div className="rounded-2xl border bg-white p-5 shadow-sm">
+    <h3 className="font-black">Resumo por tipo de OS — {periodLabel(dashboard.period)}</h3>
+    <p className="mt-1 text-xs text-slate-400">Cada ocorrencia conta uma unica vez, na categoria do primeiro servico contratado na OS.</p>
+    {rows.length === 0
+      ? <p className="mt-4 text-sm text-slate-500">Nenhuma ocorrencia neste periodo.</p>
+      : <div className="mt-4 overflow-x-auto"><table className="w-full min-w-[420px] text-left text-sm"><thead><tr className="text-[10px] font-black uppercase text-slate-500"><th className="pb-2">Tipo de OS</th><th className="pb-2 text-right">Quantidade</th><th className="pb-2 text-right">Valor</th></tr></thead><tbody>{rows.map((r) => <tr key={r.category} className="border-t"><td className="py-2 font-bold text-slate-800">{r.category}</td><td className="py-2 text-right">{r.count}</td><td className="py-2 text-right font-black text-slate-800">{money(r.total)}</td></tr>)}</tbody></table></div>}
+  </div>;
+}
+
+function periodLabel(period: { year: number; month: number }) {
+  return new Date(period.year, period.month - 1, 1).toLocaleDateString("pt-BR", { month: "long", year: "numeric" });
+}
+
+// Seletor de mes/ano do Dashboard - mesmo padrao Anterior/Proximo +
+// toLocaleDateString("pt-BR", { month: "long", year: "numeric" }) ja usado
+// pelo cursor do Calendario (CalendarView mais abaixo), so que aqui controla
+// o periodo dos indicadores do Dashboard em vez do mes exibido no grid.
+function DashboardPeriodNav({ period, onChangePeriod }: { period: Date; onChangePeriod: (d: Date) => void }) {
+  const y = period.getFullYear(); const m = period.getMonth();
+  return <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border bg-white p-5 shadow-sm">
+    <div>
+      <p className="text-[10px] font-black uppercase tracking-wider text-slate-500">Periodo analisado</p>
+      <h3 className="text-lg font-black capitalize">{period.toLocaleDateString("pt-BR", { month: "long", year: "numeric" })}</h3>
+    </div>
+    <div className="flex gap-2">
+      <button type="button" onClick={() => onChangePeriod(new Date(y, m - 1, 1))} className="rounded-xl border px-4 py-2 font-bold">Anterior</button>
+      <button type="button" onClick={() => onChangePeriod(new Date(y, m + 1, 1))} className="rounded-xl border px-4 py-2 font-bold">Proximo</button>
+    </div>
+  </div>;
+}
+
+function DashboardView({ dashboard, period, onChangePeriod }: { dashboard: Dashboard | null; period: Date; onChangePeriod: (d: Date) => void }) {
+  return <div className="space-y-6">
+    <DashboardPeriodNav period={period} onChangePeriod={onChangePeriod} />
+    {!dashboard ? <p>Carregando...</p> : <>
+      {/* "OS ativas" e "Eventos concluidos" sao estado atual (quantas OS
+          estao abertas/ja concluidas agora) - nunca filtrados pelo periodo
+          acima, ao contrario de Faturamento/Lucro (ver nota em
+          app/api/dashboard/route.ts). */}
+      <div className="grid gap-4 md:grid-cols-4"><Stat label="Faturamento" value={money(dashboard.revenue)} /><Stat label="Lucro" value={money(dashboard.profit)} tone="emerald" /><Stat label="OS ativas" value={dashboard.activeOrders} tone="amber" /><Stat label="Eventos concluidos" value={dashboard.completedOrders} /></div>
+      <OrderTotalsSection dashboard={dashboard} />
+      <OsTypeBreakdownSection dashboard={dashboard} />
+      <div className="grid gap-6 lg:grid-cols-3">
+        <div className="rounded-2xl border bg-white p-6 shadow-sm lg:col-span-2">
+          <h3 className="font-black">Resumo financeiro</h3>
+          <p className="mt-1 text-xs text-slate-400">Faturamento/Despesas acima sao do periodo selecionado. Contas a receber/pagar abaixo sao o saldo em aberto atual, independente do periodo.</p>
+          <div className="mt-5 grid gap-4 md:grid-cols-2"><Stat label="Despesas" value={money(dashboard.expenses)} tone="rose" /><Stat label="Contas a receber" value={money(dashboard.receivable)} /><Stat label="Contas a pagar" value={money(dashboard.payable)} tone="amber" /><Stat label="Eventos" value={dashboard.orders} /></div>
+        </div>
+        <div className="rounded-2xl border bg-white p-6 shadow-sm">
+          <h3 className="font-black">Proximos eventos</h3>
+          <p className="mt-1 text-xs text-slate-400">Sempre os proximos agendados a partir de hoje, independente do periodo selecionado.</p>
+          <div className="mt-4 space-y-3">{dashboard.upcomingOrders.map((o) => <div key={o.id} className="rounded-xl border p-3"><div className="flex justify-between"><b>{o.code}</b><Badge status={o.status} /></div><p className="mt-1 text-xs text-slate-500">{new Date(o.eventDate).toLocaleDateString("pt-BR")} - {o.client?.name}</p></div>)}</div>
+        </div>
+      </div>
+    </>}
+  </div>;
 }
 
 const BLANK_CLIENT_FORM = { name: "", email: "", phone: "", document: "", addressZip: "", addressStreet: "", addressNumber: "", addressNeighborhood: "", addressCity: "", addressState: "", addressReference: "", notes: "" };

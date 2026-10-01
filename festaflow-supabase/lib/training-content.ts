@@ -174,8 +174,10 @@ export const TRAINING_MODULES: TrainingModule[] = [
     importante: [
       "OS = o contrato/pedido completo.",
       "Atendimento = cada data/execucao dentro da OS.",
-      "O valor da OS e o mesmo para todos os atendimentos dela - o valor nao se divide por atendimento.",
+      "Por padrao, todo atendimento herda o valor da OS - nenhum atendimento tem valor proprio automaticamente.",
+      "E possivel sobrescrever o valor de UM atendimento especifico (editor de valor na linha daquele atendimento, inclusive numa recorrencia) sem alterar o valor da OS nem o valor dos demais atendimentos.",
     ],
+    eviteEsteErro: ["Nao confunda 'editar o valor de um atendimento' com 'editar o valor da OS' - sao acoes diferentes. Editar o valor de um atendimento afeta so aquele atendimento; os demais continuam usando o valor da OS normalmente."],
   }),
 
   buildModule({
@@ -243,6 +245,7 @@ export const TRAINING_MODULES: TrainingModule[] = [
     comoFazer: [
       "Navegue entre os meses com os botoes Anterior/Proximo.",
       "Clique em um dia para ver os atendimentos daquele dia.",
+      "O cabecalho da lista mostra a quantidade de atendimentos daquele dia - e sempre a quantidade de atendimentos, nunca de servicos (uma OS com varios servicos no mesmo dia conta como 1 atendimento).",
       "Clique em um atendimento para abrir a OS correspondente.",
     ],
   }),
@@ -277,9 +280,20 @@ export const TRAINING_MODULES: TrainingModule[] = [
     id: "dashboard",
     icon: "📊",
     title: "Dashboard",
-    summary: "Tela inicial com os numeros gerais da filial.",
-    paraQueServe: ["Mostra faturamento, OS agendadas e realizadas, e os proximos eventos, tudo em um so lugar."],
-    importante: ["Os numeros nunca incluem OS ou atendimentos cancelados."],
+    summary: "Tela inicial com os numeros da filial, filtraveis por mes.",
+    paraQueServe: ["Mostra faturamento, totais de ocorrencias (agendadas/realizadas), detalhamento por tipo de OS e os proximos eventos, tudo em um so lugar."],
+    comoFazer: [
+      "Use os botoes Anterior/Proximo no topo do Dashboard para escolher o mes/ano analisado - o mes atual e o periodo inicial ao abrir a tela.",
+      "O cabecalho 'Periodo analisado' mostra sempre qual mes/ano esta sendo exibido nos totais abaixo dele.",
+      "'Totais de ocorrencias' mostra a quantidade e o valor de atendimentos agendados e realizados dentro do mes selecionado.",
+      "'Resumo por tipo de OS' detalha esses mesmos totais por categoria de servico, sem contar a mesma ocorrencia duas vezes.",
+    ],
+    importante: [
+      "Os numeros nunca incluem OS ou atendimentos cancelados.",
+      "Faturamento, Lucro, Despesas, totais de ocorrencias e o detalhamento por tipo de OS mudam de acordo com o mes selecionado.",
+      "'OS ativas', 'Eventos concluidos', 'Contas a receber', 'Contas a pagar' e 'Proximos eventos' NAO mudam com o mes selecionado - sao sempre o estado atual (o que esta aberto, concluido ou em aberto agora), nao um numero historico daquele mes.",
+    ],
+    eviteEsteErro: ["Nao interprete 'OS ativas' ou 'Proximos eventos' como se fossem do mes selecionado - eles sempre mostram a situacao atual, mesmo que voce esteja olhando um mes passado ou futuro no seletor de periodo."],
   }),
 
   buildModule({
