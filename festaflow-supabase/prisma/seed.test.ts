@@ -55,6 +55,12 @@ async function main() {
   // inteira e vendo clients-crud/idor falharem só depois que auth.spec.ts
   // logava de novo como "operador". Isolar a conta elimina a interferência.
   const authTestId = await ensureAuthUser("authtest@teste.local", "TesteAudit123!");
+  // Conta de desenvolvedor para os testes do painel /dev (tests/e2e/dev-
+  // system-lock.spec.ts). Deliberadamente SEM Profile - o fluxo de
+  // desenvolvedor (lib/dev-auth.ts) nunca depende de profiles. Esse spec só
+  // roda a parte ligada a DEVELOPER_USER_ID se essa env var estiver setada
+  // em .env.test com o UUID impresso abaixo (test.skip claro se não estiver).
+  const devId = await ensureAuthUser("dev@teste.local", "TesteAudit123!");
 
   const adminProfile = await prisma.profile.upsert({
     where: { id: adminId },
@@ -285,6 +291,7 @@ async function main() {
     branches: [branchA.name, branchB.name],
     users: { admin: "admin@teste.local", operador: "operador@teste.local", funcionario: "funcionario@teste.local", senha: "TesteAudit123!" },
   });
+  console.log(`Conta de desenvolvedor (dev@teste.local) UUID: ${devId} - copie este valor para DEVELOPER_USER_ID em .env.test antes de rodar tests/e2e/dev-system-lock.spec.ts`);
 }
 
 main()

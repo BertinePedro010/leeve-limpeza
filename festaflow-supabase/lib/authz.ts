@@ -3,6 +3,8 @@ import { cookies } from "next/headers";
 import { prisma } from "@/lib/prisma";
 import { getCurrentUser, AuthServiceUnavailableError } from "@/lib/auth";
 import { fail } from "@/lib/json";
+import { isDeveloperUserId } from "@/lib/dev-auth";
+import { getSystemLockState } from "@/lib/system-lock";
 
 // Authorization is data-driven from `user_branches`, never inferred from `role`.
 // An admin with access to "all branches" still needs one user_branches row per
@@ -10,9 +12,14 @@ import { fail } from "@/lib/json";
 
 export class AuthzError extends Error {
   status: number;
-  constructor(message: string, status: number) {
+  // Optional, stable machine-readable code (e.g. "SYSTEM_ACCESS_BLOCKED")
+  // for the handful of errors the frontend must branch on by something
+  // other than the free-text message - see components/ui.tsx's api().
+  code?: string;
+  constructor(message: string, status: number, code?: string) {
     super(message);
     this.status = status;
+    this.code = code;
   }
 }
 
@@ -78,6 +85,16 @@ async function resolveAuth(): Promise<AuthContext> {
   }
   if (!user) {
     throw new AuthzError("Sessao expirada ou invalida. Faca login novamente.", 401);
+  }
+  // Developer account bypasses the global lock entirely (see
+  // lib/dev-auth.ts) and never pays the extra system_lock lookup below.
+  // Checked BEFORE the profile query so a blocked, non-developer request
+  // never pays for a profile lookup it can't use anyway.
+  if (!isDeveloperUserId(user.id)) {
+    const lock = await getSystemLockState();
+    if (lock.isBlocked) {
+      throw new AuthzError("Acesso temporariamente bloqueado por pendencia financeira.", 423, "SYSTEM_ACCESS_BLOCKED");
+    }
   }
   const profile = await prisma.profile.findUnique({
     where: { id: user.id },
@@ -194,7 +211,7 @@ export function assertRecordBranchAccess<T extends { branchId: string } | null |
 // carries a password/token/secret (AuthContext and Prisma error objects
 // don't hold those).
 export function handleAuthzError(error: unknown) {
-  if (error instanceof AuthzError) return fail(error.message, error.status);
+  if (error instanceof AuthzError) return fail(error.message, error.status, undefined, error.code);
   console.error("[api] unexpected error:", error);
   return fail("Nao foi possivel concluir a operacao agora. Tente novamente.", 500);
 }

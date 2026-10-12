@@ -98,7 +98,18 @@ function SaasAppShell() {
   // order and show mismatched period label vs totals).
   const dashboardPeriodRef = useRef(dashboardPeriod);
   useEffect(() => { dashboardPeriodRef.current = dashboardPeriod; }, [dashboardPeriod]);
-  useEffect(() => { api<Me>("/api/me").then(setMe).catch(() => {}); }, []);
+  // Repeats the same /api/me call every 2 minutes so a user who already has
+  // the app open finds out the system was blocked (see lib/authz.ts
+  // resolveAuth) without needing to trigger any other action first - no new
+  // endpoint, just the same cheap, already-authorized call on a light
+  // interval. A 423 is handled globally inside api() (components/ui.tsx),
+  // which redirects to /blocked before this .catch() ever runs; any other
+  // error is swallowed exactly as it already was on the mount-only call.
+  useEffect(() => {
+    api<Me>("/api/me").then(setMe).catch(() => {});
+    const interval = setInterval(() => { api<Me>("/api/me").then(setMe).catch(() => {}); }, 120_000);
+    return () => clearInterval(interval);
+  }, []);
 
   // Each fetch is caught independently - a user restricted from one module
   // (e.g. no "finance") gets a 403 on just that call. Without the per-call

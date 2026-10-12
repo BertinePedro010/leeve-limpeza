@@ -35,9 +35,11 @@ export function paymentMethodLabel(order: { paymentMethod?: string | null; payme
 // failed validation instead of only showing a generic error banner.
 export class ApiError extends Error {
   field?: string;
-  constructor(message: string, field?: string) {
+  code?: string;
+  constructor(message: string, field?: string, code?: string) {
     super(message);
     this.field = field;
+    this.code = code;
   }
 }
 
@@ -53,6 +55,17 @@ function handleExpiredSession() {
   window.location.href = "/login?expired=1";
 }
 
+// A 423 with this code means the whole installation was blocked by the
+// developer for non-payment (see lib/authz.ts resolveAuth) - handled
+// globally here, same shape as handleExpiredSession() above, so any screen
+// (including a background poll, see SaasApp.tsx) leaves the normal app and
+// shows the dedicated /blocked screen instead of a confusing inline error.
+function handleSystemBlocked() {
+  if (typeof window === "undefined") return;
+  if (window.location.pathname.startsWith("/blocked")) return;
+  window.location.href = "/blocked";
+}
+
 export async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
   const res = await fetch(path, { ...options, headers: { "Content-Type": "application/json", ...(options.headers || {}) } });
   if (res.status === 401) {
@@ -60,7 +73,11 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
     throw new ApiError("Sua sessao expirou. Faca login novamente.");
   }
   const data = await res.json().catch(() => null);
-  if (!res.ok) throw new ApiError(data?.message || "Nao foi possivel concluir esta operacao agora. Tente novamente.", data?.field);
+  if (res.status === 423 && data?.code === "SYSTEM_ACCESS_BLOCKED") {
+    handleSystemBlocked();
+    throw new ApiError(data?.message || "Acesso bloqueado.", undefined, data.code);
+  }
+  if (!res.ok) throw new ApiError(data?.message || "Nao foi possivel concluir esta operacao agora. Tente novamente.", data?.field, data?.code);
   return data;
 }
 

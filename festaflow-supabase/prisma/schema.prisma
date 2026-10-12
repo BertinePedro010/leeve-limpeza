@@ -527,3 +527,42 @@ model AppointmentRescheduleLog {
   @@index([branchId], map: "idx_appointment_reschedule_logs_branch_id")
   @@map("appointment_reschedule_logs")
 }
+
+enum SystemLockAction {
+  blocked
+  unblocked
+}
+
+// Installation-wide kill switch for non-payment access blocking - the ONE
+// model in this schema with no branchId, on purpose: it must block every
+// branch at once, never just one. Always exactly one row, whose id is the
+// literal "global" (enforced by a CHECK constraint in the migration, not
+// just by convention). Never read/written directly from a route - always
+// through lib/system-lock.ts, so there is a single place that owns "what
+// counts as blocked" and a single place that owns "who may flip it"
+// (lib/dev-auth.ts, the developer-only UUID allowlist, deliberately
+// separate from role/requireGlobalAdmin).
+model SystemLock {
+  id        String   @id @db.VarChar(16)
+  isBlocked Boolean  @default(false) @map("is_blocked")
+  reason    String?  @db.Text
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+  updatedBy String?  @map("updated_by") @db.Uuid
+
+  @@map("system_lock")
+}
+
+// Append-only history of block/unblock actions, modeled after OrderSendLog/
+// AppointmentRescheduleLog (never updated, never deleted). changedBy is a
+// plain UUID with NO foreign key to Profile: the developer account allowed
+// to write here is not required to have a profiles row at all.
+model SystemLockLog {
+  id        String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  action    SystemLockAction
+  reason    String?          @db.Text
+  changedBy String?          @map("changed_by") @db.Uuid
+  createdAt DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([createdAt], map: "idx_system_lock_logs_created_at")
+  @@map("system_lock_logs")
+}

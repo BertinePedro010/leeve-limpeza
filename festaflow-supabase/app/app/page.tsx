@@ -1,10 +1,14 @@
+import { redirect } from "next/navigation";
 import { requireUser, AuthServiceUnavailableError } from "@/lib/auth";
+import { isDeveloperUserId } from "@/lib/dev-auth";
+import { getSystemLockState } from "@/lib/system-lock";
 import SaasApp from "@/components/SaasApp";
 import { AppErrorBoundary } from "@/components/ErrorBoundary";
 
 export default async function AppPage() {
+  let user: Awaited<ReturnType<typeof requireUser>>;
   try {
-    await requireUser();
+    user = await requireUser();
   } catch (error) {
     // A transient Supabase Auth outage (5xx/network) must show a retry
     // message, never redirect to /login or drop the session - only a real
@@ -24,6 +28,12 @@ export default async function AppPage() {
     }
     throw error;
   }
+  // Catches the case where the system was blocked while this user already
+  // had a valid session - every new /app page load re-checks, so they never
+  // need to log out first (see components/ui.tsx api() for the matching
+  // check on already-open tabs making API calls).
+  const lock = await getSystemLockState();
+  if (lock.isBlocked && !isDeveloperUserId(user.id)) redirect("/blocked");
   return (
     <AppErrorBoundary>
       <SaasApp />

@@ -100,6 +100,9 @@ export const recurringScheduleSchema = z.object({
 export const recurringScheduleUpdateSchema = z.object({ serviceId: z.string().uuid(), price: z.coerce.number().nonnegative() });
 
 export const branchSchema = z.object({ name: z.string().min(2), city: z.string().min(2), state: z.string().length(2), active: z.coerce.boolean().default(true) });
+// Body for POST /api/dev/system-lock (lib/dev-auth.ts requireDeveloper() is
+// the actual authorization gate - this only validates shape/content).
+export const systemLockActionSchema = z.object({ action: z.enum(["block", "unblock"]), reason: z.string().max(500).optional().nullable() });
 
 // `to` is intentionally user-editable (send-OS modal lets the user override
 // the client's registered email) - only syntactic validity is enforced here.
