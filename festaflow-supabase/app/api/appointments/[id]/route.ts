@@ -25,34 +25,37 @@ export async function PUT(request: Request, { params }: { params: Promise<{ id: 
 
     if (parsed.data.employeeId) {
       const employee = await prisma.employee.findUnique({ where: { id: parsed.data.employeeId } });
-      if (!employee || employee.branchId !== existing.branchId) {
+      if (!employee || employee.branchId !== existing.branchId || employee.deletedAt) {
         throw new AuthzError("Funcionario nao pertence a filial do atendimento.", 422);
       }
     }
 
+    // Cancellation is terminal for every mutation on this row - checked once,
+    // before any branch below, so it covers both the reschedule path and the
+    // plain employeeId/status/notes/priceOverride path (SECURITY-AUDIT F4:
+    // this guard used to be scoped only to the reschedule branch, letting a
+    // plain {"status":"realizado"} body silently resurrect a cancelled
+    // atendimento). No reactivation flow exists or is being added.
+    if (existing.cancelledAt) {
+      throw new AuthzError("Nao e possivel alterar um atendimento cancelado.", 422);
+    }
+
     // A reschedule (date and/or startTime/endTime actually changing) is
     // handled separately from a plain field update (employeeId/status/notes)
-    // below: this is the ONLY path that (a) is intentionally allowed
-    // regardless of status - correcting the date of an already-"realizado"
-    // atendimento is exactly what this endpoint exists to unblock, the
-    // frontend-only disabled state that used to gate it is gone (see
-    // components/SaasApp.tsx AppointmentRow) - (b) keeps ServiceOrder's own
-    // eventDate/startTime/endTime in sync when the occurrence being moved is
-    // the OS's "principal" one (the same date-equality convention PUT
-    // /api/orders/[id] already uses to route a status change to the right
-    // occurrence), so the OS list, the Dashboard "Proximos eventos" widget,
-    // and the e-mail/WhatsApp "Data:" line never go stale after a correction
-    // - and (c) writes a minimal audit row (see prisma/schema.prisma
-    // AppointmentRescheduleLog). A cancelled atendimento can never be
-    // rescheduled - cancellation is terminal, exactly like every other
-    // mutation on a cancelled row in this file's sibling routes.
+    // below: this is the path that (a) is intentionally allowed for an
+    // already-"realizado" atendimento - correcting the date is exactly what
+    // this endpoint exists to unblock, the frontend-only disabled state that
+    // used to gate it is gone (see components/SaasApp.tsx AppointmentRow) -
+    // (b) keeps ServiceOrder's own eventDate/startTime/endTime in sync when
+    // the occurrence being moved is the OS's "principal" one (the same
+    // date-equality convention PUT /api/orders/[id] already uses to route a
+    // status change to the right occurrence), so the OS list, the Dashboard
+    // "Proximos eventos" widget, and the e-mail/WhatsApp "Data:" line never
+    // go stale after a correction - and (c) writes a minimal audit row (see
+    // prisma/schema.prisma AppointmentRescheduleLog).
     const dateChanged = parsed.data.date !== undefined && dateKey(parsed.data.date) !== dateKey(existing.date);
     const timeChanged = (parsed.data.startTime !== undefined && parsed.data.startTime !== existing.startTime) || (parsed.data.endTime !== undefined && parsed.data.endTime !== existing.endTime);
     const isReschedule = dateChanged || timeChanged;
-
-    if (isReschedule && existing.cancelledAt) {
-      throw new AuthzError("Nao e possivel alterar a data de um atendimento cancelado.", 422);
-    }
 
     if (!isReschedule) {
       const data = await prisma.appointment.update({ where: { id }, data: parsed.data, include });

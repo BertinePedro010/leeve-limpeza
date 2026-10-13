@@ -41,8 +41,8 @@ export async function POST(request: Request) {
       prisma.employee.findMany({ where: { id: { in: parsed.data.employeeIds } } }),
     ]);
     if (!client || client.branchId !== branchId || client.deletedAt) throw new AuthzError("Cliente nao pertence a filial informada.", 422);
-    if (!service || service.branchId !== branchId) throw new AuthzError("Servico nao pertence a filial informada.", 422);
-    if (employees.length !== parsed.data.employeeIds.length || employees.some((e) => e.branchId !== branchId)) {
+    if (!service || service.branchId !== branchId || service.deletedAt) throw new AuthzError("Servico nao pertence a filial informada.", 422);
+    if (employees.length !== parsed.data.employeeIds.length || employees.some((e) => e.branchId !== branchId || e.deletedAt)) {
       throw new AuthzError("Um ou mais funcionarios nao pertencem a filial informada.", 422);
     }
 

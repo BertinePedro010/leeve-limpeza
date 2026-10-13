@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 import { BranchProvider, useBranch } from "@/lib/branch-context";
 import { statusLabels, money, dateOnly, dateOnlyLabel, api, ApiError, Badge, Modal, Stat, CrudShell, ActionButtons, Input, NumberInput, Text, Select, Save, paymentMethodLabel, paymentMethodOptions, EmployeeMultiSelect, CepField, brazilStateOptions, MultiDatePicker, focusFormField, FieldErrorSummary, WeekdaySelector } from "@/components/ui";
@@ -14,6 +14,7 @@ import TrainingView from "@/components/TrainingView";
 import { normalizeWhatsappPhone, buildOrderWhatsappMessage, buildWhatsappShareUrl } from "@/lib/whatsapp";
 import { ORDER_STATUS_VALUES, orderStatusLabels } from "@/lib/order-status";
 import { recurrenceTypeLabel, recurrenceFrequencyLabel, recurrenceDayLabel, recurrencePeriodLabel } from "@/lib/recurrence-label";
+import { useOrderDetailCache, type OrderDetailCache } from "@/lib/use-order-detail";
 
 type Tab = "dashboard" | "clients" | "employees" | "services" | "orders" | "calendar" | "finance" | "reports" | "training" | "branches" | "users";
 export type Client = { id: string; name: string; email?: string; phone?: string; document?: string; address?: string; addressZip?: string | null; addressStreet?: string | null; addressNumber?: string | null; addressNeighborhood?: string | null; addressCity?: string | null; addressState?: string | null; addressReference?: string | null; notes?: string };
@@ -29,15 +30,45 @@ type Branch = { id: string; name: string; city: string };
 // Same fields lib/pdf.ts selects for its own "Recorrencia" section - PDF and
 // print read the same shape from the same API response, never two rules.
 type RecurringSchedule = { id: string; serviceId: string; frequency: "weekly" | "biweekly" | "monthly"; interval: number; dayOfWeek?: number | null; daysOfWeek?: number[] | null; dayOfMonth?: number | null; startDate: string; endDate?: string | null; active: boolean; price: string | number };
-type Order = { id: string; code: string; clientId: string; client?: Client; branch?: Branch; eventDate: string; startTime: string; endTime: string; location: string; addressZip?: string | null; addressStreet?: string | null; addressNumber?: string | null; addressNeighborhood?: string | null; addressCity?: string | null; addressState?: string | null; addressReference?: string | null; status: string; cancelledAt?: string | null; cancellationReason?: string | null; paymentMethod?: string | null; paymentMethodLegacy?: string | null; notes?: string; signatureName?: string; signatureDate?: string; totalAmount: string | number; total: string | number; items: OrderItem[]; employees: OrderEmployee[]; appointments: Appointment[]; recurringSchedules?: RecurringSchedule[] };
+// OrderCore: every field shared by BOTH views of a ServiceOrder below - all
+// of its own scalar columns plus the already-computed `total`. Components
+// that only ever need these (SendOrderModal, the PDF print/download
+// triggers) accept OrderCore directly, so either OrderSummary or the full
+// Order satisfies them without a cast.
+type OrderCore = { id: string; code: string; clientId: string; client?: Client; eventDate: string; startTime: string; endTime: string; location: string; addressZip?: string | null; addressStreet?: string | null; addressNumber?: string | null; addressNeighborhood?: string | null; addressCity?: string | null; addressState?: string | null; addressReference?: string | null; status: string; cancelledAt?: string | null; cancellationReason?: string | null; paymentMethod?: string | null; paymentMethodLegacy?: string | null; notes?: string; signatureName?: string; signatureDate?: string; totalAmount: string | number; total: string | number };
+// OrderSummary: the slim DTO GET /api/orders (listing) returns - OrderCore
+// plus `appointmentsCount`/`hasRecurrence`, the only two facts the
+// list/table view ever derived from the 5 "heavy" relations (items,
+// employees, transactions, full appointments, full recurringSchedules) -
+// computed server-side instead of shipping those arrays.
+type OrderSummary = OrderCore & { appointmentsCount: number; hasRecurrence: boolean };
+// Order: the FULL detail shape, returned by GET/POST/PUT /api/orders(/[id])
+// and by the cancel/transform-to-recurring actions whenever a single order
+// is read or written - unchanged from before this optimization. Fetched on
+// demand (never eagerly for the whole list) via useOrderDetailCache, see
+// lib/use-order-detail.ts and OrderFormModal/PrintOrder/RecurrenceModal below.
+type Order = OrderCore & { branch?: Branch; items: OrderItem[]; employees: OrderEmployee[]; appointments: Appointment[]; recurringSchedules?: RecurringSchedule[] };
+// Minimal shape Dashboard's "Proximas OS" card actually reads (see
+// app/api/dashboard's own loadUpcomingOrders `select`) - distinct from both
+// Order types above, which it was previously (inaccurately) typed as.
+type UpcomingOrder = { id: string; code: string; status: string; eventDate: string; client?: { name: string } };
 type Transaction = { id: string; type: "receita" | "despesa"; category: string; description: string; amount: string | number; dueDate: string; paidAt?: string; status: "pago" | "pendente"; orderId?: string; paymentMethod?: string | null; isAutoRevenue?: boolean };
 type OccurrenceBucket = { count: number; total: number };
 type CategoryBucket = { category: string; count: number; total: number };
-type Dashboard = { period: { year: number; month: number }; revenue: number; expenses: number; profit: number; receivable: number; payable: number; clients: number; employees: number; services: number; orders: number; activeOrders: number; completedOrders: number; principalOrders: { count: number }; occurrences: { total: OccurrenceBucket; scheduled: OccurrenceBucket; finalized: OccurrenceBucket }; occurrencesByCategory: CategoryBucket[]; upcomingOrders: Order[] };
+type Dashboard = { period: { year: number; month: number }; revenue: number; expenses: number; profit: number; receivable: number; payable: number; clients: number; employees: number; services: number; orders: number; activeOrders: number; completedOrders: number; principalOrders: { count: number }; occurrences: { total: OccurrenceBucket; scheduled: OccurrenceBucket; finalized: OccurrenceBucket }; occurrencesByCategory: CategoryBucket[]; upcomingOrders: UpcomingOrder[] };
 type Me = { id: string; name: string; email: string; role: string; allowedModules: string[]; isGlobalAdmin: boolean };
 type SendChannel = "email" | "whatsapp";
 
 const nav: Array<[Tab, string]> = [["dashboard", "Dashboard"], ["orders", "Ordens de Servico"], ["calendar", "Calendario"], ["clients", "Clientes"], ["employees", "Funcionarios"], ["services", "Servicos"], ["finance", "Financeiro"], ["reports", "Relatorios"], ["training", "Treinamento"]];
+
+// Mirrors the server's own toSummary() (app/api/orders GET) so a full detail
+// object (from a save/cancel/create response) can be projected into the same
+// summary shape the listing uses, without a second round trip - see
+// applyOrderSaved below.
+function toOrderSummary(o: Order): OrderSummary {
+  const { items: _items, employees: _employees, appointments, recurringSchedules, branch: _branch, ...rest } = o;
+  return { ...rest, appointmentsCount: appointments.filter((a) => !a.cancelledAt).length, hasRecurrence: !!(recurringSchedules && recurringSchedules.length > 0) };
+}
 
 // Client-side nav filtering is UX only (hide tabs the user can't use) - the
 // real enforcement is requireModule() on every API route (lib/authz.ts), so
@@ -71,7 +102,12 @@ function SaasAppShell() {
   const [clients, setClients] = useState<Client[]>([]);
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [services, setServices] = useState<Service[]>([]);
-  const [orders, setOrders] = useState<Order[]>([]);
+  const [orders, setOrders] = useState<OrderSummary[]>([]);
+  // Full OS detail (items/employees/appointments/recurringSchedules) loads
+  // on demand per id - see lib/use-order-detail.ts. One shared instance so a
+  // request already in flight for one OS is reused by every modal that asks
+  // for it at the same time.
+  const orderDetailCache = useOrderDetailCache<Order>(activeBranchId);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [dashboard, setDashboard] = useState<Dashboard | null>(null);
   // Mes/ano selecionado no Dashboard (dia 1 do mes, hora zero - so o
@@ -131,7 +167,7 @@ function SaasAppShell() {
       api<Client[]>(`/api/clients${qs}`).catch(() => [] as Client[]),
       api<Employee[]>(`/api/employees${qs}`).catch(() => [] as Employee[]),
       api<Service[]>(`/api/services${qs}`).catch(() => [] as Service[]),
-      api<Order[]>(`/api/orders${qs}`).catch(() => [] as Order[]),
+      api<OrderSummary[]>(`/api/orders${qs}`).catch(() => [] as OrderSummary[]),
       api<Transaction[]>(`/api/transactions${qs}`).catch(() => [] as Transaction[]),
       api<Dashboard>(`/api/dashboard${dashboardQs(requestedBranchId)}`).catch(() => null),
     ]);
@@ -195,19 +231,27 @@ function SaasAppShell() {
   // client-side guess, so splicing it in directly is not an optimistic
   // update - the write is already confirmed by the time this runs.
   async function applyOrderSaved(saved: Order) {
+    const summary = toOrderSummary(saved);
     setOrders((prev) => {
-      const idx = prev.findIndex((o) => o.id === saved.id);
-      const next = idx === -1 ? [...prev, saved] : prev.map((o, i) => (i === idx ? saved : o));
+      const idx = prev.findIndex((o) => o.id === summary.id);
+      const next = idx === -1 ? [...prev, summary] : prev.map((o, i) => (i === idx ? summary : o));
       return next.sort((a, b) => new Date(a.eventDate).getTime() - new Date(b.eventDate).getTime());
     });
+    // `saved` is already the full detail (every write path this is called
+    // from - OrderFormModal's PUT/POST, cancelOrder, RecurrenceModal's
+    // created-order fetch - returns/fetches the full shape) - caching it
+    // here means a modal reopened right after a save never has to re-fetch.
+    orderDetailCache.set(saved);
     refreshFinanceInBackground();
   }
 
   useEffect(() => {
     if (!activeBranchId) return;
     setClients([]); setEmployees([]); setServices([]); setOrders([]); setTransactions([]); setDashboard(null);
+    orderDetailCache.clear();
     setDataLoading(true);
     loadAll().catch((err) => setMessage(err.message)).finally(() => setDataLoading(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeBranchId]);
 
   async function logout() { await supabase.auth.signOut(); location.href = "/login"; }
@@ -221,7 +265,7 @@ function SaasAppShell() {
   return <div className="flex h-screen overflow-hidden bg-slate-50 text-slate-800">
     {sidebarOpen && <div onClick={() => setSidebarOpen(false)} className="fixed inset-0 z-30 bg-slate-950/60 lg:hidden" />}
     <aside className={`no-print fixed inset-y-0 left-0 z-40 flex w-72 flex-col overflow-y-auto bg-slate-950 text-slate-300 transition-transform duration-200 lg:static lg:translate-x-0 ${sidebarOpen ? "translate-x-0" : "-translate-x-full"}`}><div className="flex items-center justify-between border-b border-slate-800 p-6"><div><h1 className="text-2xl font-black text-white">LeeveLimpeza</h1><p className="text-xs text-slate-500">Supabase PostgreSQL</p></div><button onClick={() => setSidebarOpen(false)} aria-label="Fechar menu" className="rounded-lg p-1 text-slate-500 hover:bg-slate-900 hover:text-white lg:hidden">✕</button></div><div className="border-b border-slate-800 py-4"><BranchSwitcher /></div><nav className="flex-1 space-y-1 overflow-y-auto p-4">{visibleNav.map(([id, label]) => <button key={id} onClick={() => { setTab(id); setSidebarOpen(false); }} className={`w-full rounded-xl px-4 py-3 text-left text-sm font-bold transition ${tab === id ? "bg-indigo-600 text-white" : "text-slate-400 hover:bg-slate-900 hover:text-white"}`}>{label}</button>)}</nav><div className="border-t border-slate-800 p-4"><button onClick={logout} className="w-full rounded-xl border border-slate-800 py-2 text-xs font-black uppercase text-slate-400 hover:bg-slate-900">Sair</button></div></aside>
-    <main className="flex-1 overflow-y-auto"><header className="no-print sticky top-0 z-20 border-b border-slate-200 bg-white/90 px-4 py-4 backdrop-blur lg:px-8"><div className="flex flex-wrap items-center justify-between gap-3"><div className="flex items-center gap-3"><button onClick={() => setSidebarOpen(true)} aria-label="Abrir menu" className="rounded-xl border border-slate-200 p-2 text-slate-600 lg:hidden">☰</button><div><h2 className="text-xl font-black">{visibleNav.find(([id]) => id === tab)?.[1]}</h2><p className="text-xs font-bold uppercase tracking-wide text-indigo-600">{activeBranch?.name || "Selecione uma filial"}</p>{message && <p className="text-xs text-rose-600">{message}</p>}</div></div>{canUseModule(me, "orders") && <button onClick={() => setTab("orders")} className="rounded-xl bg-indigo-600 px-4 py-2 text-sm font-black text-white">Nova OS</button>}</div></header><section className="p-4 lg:p-8">{tab === "dashboard" && <DashboardView dashboard={dashboard} period={dashboardPeriod} onChangePeriod={setDashboardPeriod} />}{tab === "clients" && <ClientsView data={clients} branchId={activeBranchId} reload={loadAll} loading={dataLoading} openClientId={pendingClientEditId} onOpenClientHandled={() => setPendingClientEditId(null)} />}{tab === "employees" && <EmployeesView data={employees} branchId={activeBranchId} reload={loadAll} loading={dataLoading} />}{tab === "services" && <ServicesView data={services} branchId={activeBranchId} reload={loadAll} loading={dataLoading} />}{tab === "orders" && <OrdersView orders={orders} clients={clients} employees={employees} services={services} branchId={activeBranchId} reload={loadAll} onOrderSaved={applyOrderSaved} loading={dataLoading} onEditClient={goEditClient} />}{tab === "calendar" && <CalendarView branchId={activeBranchId} employees={employees} clients={clients} services={services} orders={orders} reload={loadAll} onOrderSaved={applyOrderSaved} onEditClient={goEditClient} />}{tab === "finance" && <FinanceView data={transactions} orders={orders} employees={employees} clients={clients} services={services} branchId={activeBranchId} reload={loadAll} onOrderSaved={applyOrderSaved} loading={dataLoading} onEditClient={goEditClient} />}{tab === "reports" && <ReportsView employees={employees} services={services} isGlobalAdmin={!!me?.isGlobalAdmin} />}{tab === "training" && <TrainingView />}{tab === "branches" && <BranchesView />}{tab === "users" && <UsersView />}</section></main>
+    <main className="flex-1 overflow-y-auto"><header className="no-print sticky top-0 z-20 border-b border-slate-200 bg-white/90 px-4 py-4 backdrop-blur lg:px-8"><div className="flex flex-wrap items-center justify-between gap-3"><div className="flex items-center gap-3"><button onClick={() => setSidebarOpen(true)} aria-label="Abrir menu" className="rounded-xl border border-slate-200 p-2 text-slate-600 lg:hidden">☰</button><div><h2 className="text-xl font-black">{visibleNav.find(([id]) => id === tab)?.[1]}</h2><p className="text-xs font-bold uppercase tracking-wide text-indigo-600">{activeBranch?.name || "Selecione uma filial"}</p>{message && <p className="text-xs text-rose-600">{message}</p>}</div></div>{canUseModule(me, "orders") && <button onClick={() => setTab("orders")} className="rounded-xl bg-indigo-600 px-4 py-2 text-sm font-black text-white">Nova OS</button>}</div></header><section className="p-4 lg:p-8">{tab === "dashboard" && <DashboardView dashboard={dashboard} period={dashboardPeriod} onChangePeriod={setDashboardPeriod} />}{tab === "clients" && <ClientsView data={clients} branchId={activeBranchId} reload={loadAll} loading={dataLoading} openClientId={pendingClientEditId} onOpenClientHandled={() => setPendingClientEditId(null)} />}{tab === "employees" && <EmployeesView data={employees} branchId={activeBranchId} reload={loadAll} loading={dataLoading} />}{tab === "services" && <ServicesView data={services} branchId={activeBranchId} reload={loadAll} loading={dataLoading} />}{tab === "orders" && <OrdersView orders={orders} clients={clients} employees={employees} services={services} branchId={activeBranchId} reload={loadAll} onOrderSaved={applyOrderSaved} loading={dataLoading} onEditClient={goEditClient} orderDetailCache={orderDetailCache} />}{tab === "calendar" && <CalendarView branchId={activeBranchId} employees={employees} clients={clients} services={services} orders={orders} reload={loadAll} onOrderSaved={applyOrderSaved} onEditClient={goEditClient} orderDetailCache={orderDetailCache} />}{tab === "finance" && <FinanceView data={transactions} orders={orders} employees={employees} clients={clients} services={services} branchId={activeBranchId} reload={loadAll} onOrderSaved={applyOrderSaved} loading={dataLoading} onEditClient={goEditClient} orderDetailCache={orderDetailCache} />}{tab === "reports" && <ReportsView employees={employees} services={services} isGlobalAdmin={!!me?.isGlobalAdmin} />}{tab === "training" && <TrainingView />}{tab === "branches" && <BranchesView />}{tab === "users" && <UsersView />}</section></main>
   </div>;
 }
 
@@ -507,16 +551,54 @@ function ClientSummaryPanel({ summary, term }: { summary: ClientSearchSummary; t
   </div>;
 }
 
-function OrdersView({ orders, clients, employees, services, branchId, reload, onOrderSaved, loading, onEditClient }: { orders: Order[]; clients: Client[]; employees: Employee[]; services: Service[]; branchId: string | null; reload: () => Promise<void>; onOrderSaved: (order: Order) => Promise<void>; loading: boolean; onEditClient?: (clientId: string) => void }) {
-  const [open, setOpen] = useState(false); const [print, setPrint] = useState<Order | null>(null); const [editing, setEditing] = useState<Order | null>(null);
+// Extracted and memoized so opening/closing the edit/print/send/recurrence
+// modals (OrdersView's own open/editing/print/sending/recurrenceTarget
+// state) never re-renders this table - those state changes don't touch any
+// of this component's props (orders/callbacks), so React.memo's default
+// shallow-prop comparison skips the whole row list. The callbacks it
+// receives MUST keep stable identity (useCallback in OrdersView) for the
+// memo to actually take effect - a fresh inline arrow function every render
+// would defeat it. No visual/behavioral change: same markup, same classes,
+// same fields, same actions.
+const OrdersTable = memo(function OrdersTable({
+  orders,
+  onPrint,
+  onEdit,
+  onSend,
+  onTransform,
+  onRemove,
+}: {
+  orders: OrderSummary[];
+  onPrint: (o: OrderSummary) => void;
+  onEdit: (o: OrderSummary) => void;
+  onSend: (o: OrderSummary, channel: SendChannel) => void;
+  onTransform: (o: OrderSummary, mode: "transform" | "template") => void;
+  onRemove: (id: string) => void;
+}) {
+  return <div className="overflow-x-auto rounded-2xl border bg-white"><table className="w-full text-sm"><thead className="bg-slate-50 text-left text-xs uppercase text-slate-500"><tr><th className="p-4">Codigo</th><th className="p-4">Cliente</th><th className="hidden p-4 sm:table-cell">Data</th><th className="hidden p-4 sm:table-cell">Atendimentos</th><th className="hidden p-4 sm:table-cell">Pagamento</th><th className="p-4">Status</th><th className="p-4 text-right">Valor unit.</th><th className="p-4 text-right">Total</th><th className="p-4 text-right">Acoes</th></tr></thead><tbody>{orders.map((o) => { return <tr key={o.id} className="border-t"><td className="p-4 font-mono font-black">{o.code}</td><td className="p-4">{o.client?.name}</td><td className="hidden p-4 sm:table-cell">{new Date(o.eventDate).toLocaleDateString("pt-BR")}</td><td className="hidden p-4 sm:table-cell">{o.appointmentsCount}</td><td className="hidden p-4 text-xs sm:table-cell">{paymentMethodLabel(o)}</td><td className="p-4"><Badge status={o.status} cancelledAt={o.cancelledAt} /></td><td className="p-4 text-right text-slate-500">{money(o.totalAmount)}</td><td className="p-4 text-right font-black text-indigo-600">{money(o.total)}</td><td className="p-4 text-right"><div className="flex flex-wrap items-center justify-end gap-x-3 gap-y-1">
+    <button onClick={() => onPrint(o)} className="font-bold">PDF</button>
+    <button onClick={() => onEdit(o)} className="font-bold text-indigo-600">Editar</button>
+    <button onClick={() => onSend(o, "email")} className="font-bold text-emerald-600">E-mail</button>
+    <button onClick={() => onSend(o, "whatsapp")} className="font-bold text-emerald-600">WhatsApp</button>
+    {o.hasRecurrence
+      ? <span className="text-xs font-bold text-slate-400">Recorrencia configurada</span>
+      : !o.cancelledAt && (o.status === "agendado"
+        ? <button onClick={() => onTransform(o, "transform")} className="font-bold text-violet-600">Transformar em recorrencia</button>
+        : <button onClick={() => onTransform(o, "template")} className="font-bold text-violet-600">Criar recorrencia a partir desta OS</button>)}
+    <button onClick={() => onRemove(o.id)} className="font-bold text-rose-600">Excluir</button>
+  </div></td></tr>; })}</tbody></table></div>;
+});
+
+function OrdersView({ orders, clients, employees, services, branchId, reload, onOrderSaved, loading, onEditClient, orderDetailCache }: { orders: OrderSummary[]; clients: Client[]; employees: Employee[]; services: Service[]; branchId: string | null; reload: () => Promise<void>; onOrderSaved: (order: Order) => Promise<void>; loading: boolean; onEditClient?: (clientId: string) => void; orderDetailCache: OrderDetailCache<Order> }) {
+  const [open, setOpen] = useState(false); const [print, setPrint] = useState<OrderSummary | null>(null); const [editing, setEditing] = useState<OrderSummary | null>(null);
   const [recurrenceOpen, setRecurrenceOpen] = useState(false);
   // Opens the shared RecurrenceModal prefilled from a specific OS - "transform"
   // attaches the recurrence to that same OS (no new OS); "template" creates a
   // brand-new recurring OS using it only as a starting point (offered instead
   // for a Realizada OS, whose own history must never be rewritten in place -
   // see app/api/orders/[id]/transform-to-recurring).
-  const [recurrenceTarget, setRecurrenceTarget] = useState<{ order: Order; mode: "transform" | "template" } | null>(null);
-  const [sending, setSending] = useState<{ order: Order; channel: SendChannel } | null>(null);
+  const [recurrenceTarget, setRecurrenceTarget] = useState<{ order: OrderSummary; mode: "transform" | "template" } | null>(null);
+  const [sending, setSending] = useState<{ order: OrderSummary; channel: SendChannel } | null>(null);
 
   // Client search. Server-side (never a frontend filter over `orders`): the
   // debounced term is sent to /api/orders + /api/orders/summary, both of which
@@ -525,7 +607,7 @@ function OrdersView({ orders, clients, employees, services, branchId, reload, on
   // edit/delete/create during an active search refreshes the filtered view.
   const [search, setSearch] = useState("");
   const [debounced, setDebounced] = useState("");
-  const [searchResults, setSearchResults] = useState<Order[] | null>(null);
+  const [searchResults, setSearchResults] = useState<OrderSummary[] | null>(null);
   const [summary, setSummary] = useState<ClientSearchSummary | null>(null);
   const [searchLoading, setSearchLoading] = useState(false);
 
@@ -540,7 +622,7 @@ function OrdersView({ orders, clients, employees, services, branchId, reload, on
     setSearchLoading(true);
     const qs = `?branchId=${encodeURIComponent(branchId)}&clientSearch=${encodeURIComponent(debounced)}`;
     Promise.all([
-      api<Order[]>(`/api/orders${qs}`),
+      api<OrderSummary[]>(`/api/orders${qs}`),
       api<ClientSearchSummary>(`/api/orders/summary${qs}`),
     ]).then(([list, sum]) => {
       if (cancelled) return;
@@ -557,21 +639,16 @@ function OrdersView({ orders, clients, employees, services, branchId, reload, on
   const isSearching = debounced.length > 0;
   const displayedOrders = searchResults ?? orders;
 
-  async function removeOrder(id: string) { if (!confirm("Excluir OS?")) return; try { await api(`/api/orders/${id}`, { method: "DELETE" }); await reload(); } catch (err) { alert(err instanceof Error ? err.message : "Erro ao excluir OS."); } }
+  const removeOrder = useCallback(async (id: string) => { if (!confirm("Excluir OS?")) return; try { await api(`/api/orders/${id}`, { method: "DELETE" }); orderDetailCache.invalidate(id); await reload(); } catch (err) { alert(err instanceof Error ? err.message : "Erro ao excluir OS."); } }, [reload, orderDetailCache]);
+  // Stable identities so <OrdersTable> (React.memo) actually skips
+  // re-rendering when only modal-related state below changes.
+  const handlePrint = useCallback((o: OrderSummary) => setPrint(o), []);
+  const handleEdit = useCallback((o: OrderSummary) => { setEditing(o); setOpen(true); }, []);
+  const handleSend = useCallback((o: OrderSummary, channel: SendChannel) => setSending({ order: o, channel }), []);
+  const handleTransform = useCallback((o: OrderSummary, mode: "transform" | "template") => setRecurrenceTarget({ order: o, mode }), []);
 
   if (loading) return <p className="text-sm text-slate-500">Carregando ordens de servico...</p>;
-  return <div className="space-y-5"><div className="flex flex-wrap justify-between gap-2"><p className="text-sm text-slate-500">OS com multiplos atendimentos, recorrencia, equipe, assinatura e impressao/PDF.</p><div className="flex gap-2"><button onClick={() => setRecurrenceOpen(true)} className="rounded-xl border border-indigo-300 px-4 py-2 font-black text-indigo-600">Nova Recorrencia</button><button onClick={() => { setEditing(null); setOpen(true); }} className="rounded-xl bg-indigo-600 px-4 py-2 font-black text-white">Nova OS</button></div></div><div className="flex flex-wrap items-center gap-2"><div className="relative flex-1 min-w-[220px]"><span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400">🔎</span><input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Pesquisar cliente..." aria-label="Pesquisar cliente" className="w-full rounded-xl border p-3 pl-9 text-sm" /></div>{search && <button onClick={() => setSearch("")} className="rounded-xl border px-4 py-2 text-sm font-black text-slate-600">Limpar</button>}{searchLoading && <span className="text-xs font-bold text-slate-400">Buscando...</span>}</div><div className="overflow-x-auto rounded-2xl border bg-white"><table className="w-full text-sm"><thead className="bg-slate-50 text-left text-xs uppercase text-slate-500"><tr><th className="p-4">Codigo</th><th className="p-4">Cliente</th><th className="hidden p-4 sm:table-cell">Data</th><th className="hidden p-4 sm:table-cell">Atendimentos</th><th className="hidden p-4 sm:table-cell">Pagamento</th><th className="p-4">Status</th><th className="p-4 text-right">Valor unit.</th><th className="p-4 text-right">Total</th><th className="p-4 text-right">Acoes</th></tr></thead><tbody>{displayedOrders.map((o) => { const nonCancelledCount = o.appointments?.filter((a) => !a.cancelledAt).length ?? 0; return <tr key={o.id} className="border-t"><td className="p-4 font-mono font-black">{o.code}</td><td className="p-4">{o.client?.name}</td><td className="hidden p-4 sm:table-cell">{new Date(o.eventDate).toLocaleDateString("pt-BR")}</td><td className="hidden p-4 sm:table-cell">{nonCancelledCount}</td><td className="hidden p-4 text-xs sm:table-cell">{paymentMethodLabel(o)}</td><td className="p-4"><Badge status={o.status} cancelledAt={o.cancelledAt} /></td><td className="p-4 text-right text-slate-500">{money(o.totalAmount)}</td><td className="p-4 text-right font-black text-indigo-600">{money(o.total)}</td><td className="p-4 text-right"><div className="flex flex-wrap items-center justify-end gap-x-3 gap-y-1">
-    <button onClick={() => setPrint(o)} className="font-bold">PDF</button>
-    <button onClick={() => { setEditing(o); setOpen(true); }} className="font-bold text-indigo-600">Editar</button>
-    <button onClick={() => setSending({ order: o, channel: "email" })} className="font-bold text-emerald-600">E-mail</button>
-    <button onClick={() => setSending({ order: o, channel: "whatsapp" })} className="font-bold text-emerald-600">WhatsApp</button>
-    {o.recurringSchedules && o.recurringSchedules.length > 0
-      ? <span className="text-xs font-bold text-slate-400">Recorrencia configurada</span>
-      : !o.cancelledAt && (o.status === "agendado"
-        ? <button onClick={() => setRecurrenceTarget({ order: o, mode: "transform" })} className="font-bold text-violet-600">Transformar em recorrencia</button>
-        : <button onClick={() => setRecurrenceTarget({ order: o, mode: "template" })} className="font-bold text-violet-600">Criar recorrencia a partir desta OS</button>)}
-    <button onClick={() => removeOrder(o.id)} className="font-bold text-rose-600">Excluir</button>
-  </div></td></tr>; })}</tbody></table></div>{isSearching && !searchLoading && displayedOrders.length === 0 && <div className="rounded-2xl border bg-white p-6 text-sm text-slate-500">Nenhuma Ordem de Servico encontrada para este cliente.</div>}{isSearching && summary && summary.totalOrders > 0 && <ClientSummaryPanel summary={summary} term={debounced} />}{open && <OrderFormModal order={editing} orders={orders} clients={clients} employees={employees} services={services} branchId={branchId} onClose={() => setOpen(false)} reload={reload} onSaved={onOrderSaved} onEditClient={onEditClient} />}{print && <PrintOrder order={print} close={() => setPrint(null)} />}{recurrenceOpen && <RecurrenceModal clients={clients} services={services} employees={employees} branchId={branchId} close={() => setRecurrenceOpen(false)} onOrderCreated={onOrderSaved} reload={reload} onEditClient={onEditClient} />}{recurrenceTarget && <RecurrenceModal clients={clients} services={services} employees={employees} branchId={branchId} sourceOrder={recurrenceTarget.order} mode={recurrenceTarget.mode} close={() => setRecurrenceTarget(null)} onOrderCreated={onOrderSaved} reload={reload} onEditClient={onEditClient} />}{sending && <SendOrderModal order={sending.order} channel={sending.channel} onClose={() => setSending(null)} />}</div>;
+  return <div className="space-y-5"><div className="flex flex-wrap justify-between gap-2"><p className="text-sm text-slate-500">OS com multiplos atendimentos, recorrencia, equipe, assinatura e impressao/PDF.</p><div className="flex gap-2"><button onClick={() => setRecurrenceOpen(true)} className="rounded-xl border border-indigo-300 px-4 py-2 font-black text-indigo-600">Nova Recorrencia</button><button onClick={() => { setEditing(null); setOpen(true); }} className="rounded-xl bg-indigo-600 px-4 py-2 font-black text-white">Nova OS</button></div></div><div className="flex flex-wrap items-center gap-2"><div className="relative flex-1 min-w-[220px]"><span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400">🔎</span><input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Pesquisar cliente..." aria-label="Pesquisar cliente" className="w-full rounded-xl border p-3 pl-9 text-sm" /></div>{search && <button onClick={() => setSearch("")} className="rounded-xl border px-4 py-2 text-sm font-black text-slate-600">Limpar</button>}{searchLoading && <span className="text-xs font-bold text-slate-400">Buscando...</span>}</div><OrdersTable orders={displayedOrders} onPrint={handlePrint} onEdit={handleEdit} onSend={handleSend} onTransform={handleTransform} onRemove={removeOrder} />{isSearching && !searchLoading && displayedOrders.length === 0 && <div className="rounded-2xl border bg-white p-6 text-sm text-slate-500">Nenhuma Ordem de Servico encontrada para este cliente.</div>}{isSearching && summary && summary.totalOrders > 0 && <ClientSummaryPanel summary={summary} term={debounced} />}{open && <OrderFormModal order={editing} orderDetailCache={orderDetailCache} clients={clients} employees={employees} services={services} branchId={branchId} onClose={() => setOpen(false)} reload={reload} onSaved={onOrderSaved} onEditClient={onEditClient} />}{print && <PrintOrder order={print} orderDetailCache={orderDetailCache} close={() => setPrint(null)} />}{recurrenceOpen && <RecurrenceModal clients={clients} services={services} employees={employees} branchId={branchId} orderDetailCache={orderDetailCache} close={() => setRecurrenceOpen(false)} onOrderCreated={onOrderSaved} reload={reload} onEditClient={onEditClient} />}{recurrenceTarget && <RecurrenceModal clients={clients} services={services} employees={employees} branchId={branchId} orderDetailCache={orderDetailCache} sourceOrder={recurrenceTarget.order} mode={recurrenceTarget.mode} close={() => setRecurrenceTarget(null)} onOrderCreated={onOrderSaved} reload={reload} onEditClient={onEditClient} />}{sending && <SendOrderModal order={sending.order} channel={sending.channel} onClose={() => setSending(null)} />}</div>;
 }
 
 type ShownAddress = { addressStreet?: string | null; addressNumber?: string | null; addressNeighborhood?: string | null; addressCity?: string | null; addressState?: string | null; addressZip?: string | null; addressReference?: string | null; location?: string | null };
@@ -628,15 +705,27 @@ function ClientServiceAddressPanel({ client, addressState, historical, onEditCli
 // confirms first. Mirrors RESCHEDULE_REALIZADO_CONFIRM below.
 const REALIZADO_PRICE_EDIT_CONFIRM = "Esta OS ja foi realizada. Alterar o valor podera refletir no historico, relatorios e financeiro. Deseja continuar?";
 
-function OrderFormModal({ order, orders, clients, employees, services, branchId, onClose, reload, onSaved, onEditClient }: { order: Order | null; orders: Order[]; clients: Client[]; employees: Employee[]; services: Service[]; branchId: string | null; onClose: () => void; reload: () => Promise<void>; onSaved: (order: Order) => Promise<void>; onEditClient?: (clientId: string) => void }) {
+function OrderFormModal({ order, orderDetailCache, clients, employees, services, branchId, onClose, reload, onSaved, onEditClient }: { order: OrderSummary | null; orderDetailCache: OrderDetailCache<Order>; clients: Client[]; employees: Employee[]; services: Service[]; branchId: string | null; onClose: () => void; reload: () => Promise<void>; onSaved: (order: Order) => Promise<void>; onEditClient?: (clientId: string) => void }) {
   // Address fields are intentionally absent from the form: the OS service
   // address is never typed here, it is carried from the selected client's
   // cadastro (see ClientServiceAddressPanel + app/api/orders).
   const blank = { clientId: clients[0]?.id || "", eventDate: dateOnly(), startTime: "18:00", endTime: "23:59", status: "agendado", paymentMethod: "", notes: "", signatureName: "", employeeIds: [] as string[], items: [] as Array<{ serviceId: string; quantity: number; unitPrice: number }> };
   function fromOrder(o: Order) { return { clientId: o.clientId, eventDate: dateOnly(o.eventDate), startTime: o.startTime, endTime: o.endTime, status: o.status, paymentMethod: o.paymentMethod || "", notes: o.notes || "", signatureName: o.signatureName || "", employeeIds: o.employees.map((x) => x.employee.id), items: o.items.map((i) => ({ serviceId: i.serviceId, quantity: i.quantity, unitPrice: Number(i.unitPrice) })) }; }
 
-  const [current, setCurrent] = useState<Order | null>(order);
-  const [form, setForm] = useState(() => (order ? fromOrder(order) : blank));
+  // `order` (the prop) is only ever the slim listing/upcoming shape now - the
+  // full detail (items/employees/appointments/recurringSchedules) this form
+  // actually edits loads on demand below. `current`/`form` start from a
+  // cache hit when one exists (reopening the same OS later in the session)
+  // or from a loading placeholder otherwise; a skeleton/disabled-Save gate
+  // in the render below keeps the user from acting on incomplete data (see
+  // detailLoading/detailError).
+  const [current, setCurrent] = useState<Order | null>(() => (order ? orderDetailCache.get(order.id) ?? null : null));
+  const [form, setForm] = useState(() => {
+    const cached = order ? orderDetailCache.get(order.id) : null;
+    return cached ? fromOrder(cached) : blank;
+  });
+  const [detailLoading, setDetailLoading] = useState(!!order && !current);
+  const [detailError, setDetailError] = useState("");
   const [serviceId, setServiceId] = useState(services[0]?.id || "");
   const [error, setError] = useState("");
   const [errorField, setErrorField] = useState("");
@@ -647,8 +736,9 @@ function OrderFormModal({ order, orders, clients, employees, services, branchId,
   // Snapshot of the unitPrice this OS was opened with, by position - used
   // only to detect whether the user actually changed a price while editing a
   // "realizado" OS (see REALIZADO_PRICE_EDIT_CONFIRM below). Captured once at
-  // mount, never updated afterward, so it stays the true "before" value for
-  // the confirmation check even as form.items changes while editing.
+  // mount (or once full detail actually arrives, for the loading case) and
+  // never updated afterward otherwise, so it stays the true "before" value
+  // for the confirmation check even as form.items changes while editing.
   const initialItemPricesRef = useRef(form.items.map((i) => Number(i.unitPrice)));
 
   // The OS service address always comes from the selected client's cadastro.
@@ -664,6 +754,9 @@ function OrderFormModal({ order, orders, clients, employees, services, branchId,
   // the new client's cadastro (and then it must be complete).
   const preservesOsAddress = !!current && form.clientId === current.clientId;
   const addressReady = preservesOsAddress || clientAddressState === "ok";
+  // Gates Save/Cancelar OS/etc. until the full detail this form edits has
+  // actually loaded - never let an action run against incomplete data.
+  const detailReady = !order || !!current;
 
   // Scrolls to and focuses the field named by the server's `field` hint (or
   // "items" for the services section, which has no single input) so a
@@ -674,10 +767,52 @@ function OrderFormModal({ order, orders, clients, employees, services, branchId,
     focusFormField(`os-field-${field}`);
   }
 
-  // Keeps `current` (and the AppointmentsSection it feeds) fresh after any
-  // action taken on a sibling appointment, without closing the modal - the
-  // same sync-from-parent-list pattern the original inline form used.
-  useEffect(() => { if (current) { const fresh = orders.find((o) => o.id === current.id); if (fresh) setCurrent(fresh); } }, [orders]);
+  // Loads (or retries loading) this OS's full detail. Only ever targets
+  // `order.id`, which is fixed for the lifetime of this mounted instance -
+  // if the user closes this modal and opens a different OS, React mounts a
+  // brand-new OrderFormModal instance with its own closures, so a slow
+  // response for THIS instance can never land on an instance now showing a
+  // different OS (out-of-order protection comes from React's own unmount
+  // semantics, not extra bookkeeping here).
+  const loadDetail = useCallback(() => {
+    if (!order) return;
+    setDetailLoading(true);
+    setDetailError("");
+    orderDetailCache
+      .fetch(order.id)
+      .then((fetched) => {
+        setCurrent(fetched);
+        setForm(fromOrder(fetched));
+        initialItemPricesRef.current = fetched.items.map((i) => Number(i.unitPrice));
+      })
+      .catch((err) => setDetailError(err instanceof Error ? err.message : "Nao foi possivel carregar os detalhes da OS."))
+      .finally(() => setDetailLoading(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [order?.id]);
+
+  useEffect(() => {
+    if (!order || current) return; // "Nova OS", or already served from cache on mount
+    loadDetail();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Re-fetches just this OS's detail (never the top-level `form` fields,
+  // which the user may be mid-editing) after an action on a sibling
+  // appointment/recorrencia - same intent as the original "resync from the
+  // parent's order list" effect, now sourced from the detail cache instead
+  // of the (now slim) listing array.
+  async function refreshDetail() {
+    if (!current) return;
+    try {
+      const fresh = await orderDetailCache.fetch(current.id);
+      setCurrent(fresh);
+    } catch {
+      // Keep showing the last known detail - reload() (called by every
+      // caller of this function) already refreshed the parent's summary
+      // list, so the OS itself is never lost from view even if this
+      // specific detail re-fetch fails.
+    }
+  }
 
   function addService() { const s = services.find((x) => x.id === serviceId); if (!s) return; setForm({ ...form, items: [...form.items, { serviceId: s.id, quantity: 1, unitPrice: Number(s.price) }] }); }
   // Merges a whole batch from the multi-date calendar at once, dropping any
@@ -749,31 +884,38 @@ function OrderFormModal({ order, orders, clients, employees, services, branchId,
       // every appointment in one transaction - no per-date request.
       await api("/api/appointments", { method: "POST", body: JSON.stringify({ orderId: current.id, dates, startTime, endTime }) });
       await reload();
+      await refreshDetail();
     } catch (err) { alert(err instanceof Error ? err.message : "Erro ao adicionar atendimento."); }
   }
 
   // Cancels the WHOLE OS (app/api/orders/[id]/cancel) - the replacement for
   // the old "set status para Cancelado" option, now that cancellation is
   // tracked via cancelledAt instead of a status value (see lib/order-status.ts).
+  // That endpoint returns only the updated ServiceOrder's own scalar columns
+  // (no include()) - never enough to feed AppointmentsSection/items/etc., so
+  // the full detail is re-fetched the same way order creation already does
+  // (see RecurrenceModal's onOrderCreated below) instead of trusting it
+  // directly as a complete Order.
   async function cancelOrder() {
     if (!current) return;
     const reason = prompt("Motivo do cancelamento desta OS:");
     if (!reason) return;
     try {
-      const saved = await api<Order>(`/api/orders/${current.id}/cancel`, { method: "POST", body: JSON.stringify({ reason }) });
-      await onSaved(saved);
-      setCurrent(saved);
+      await api(`/api/orders/${current.id}/cancel`, { method: "POST", body: JSON.stringify({ reason }) });
+      const fresh = await orderDetailCache.fetch(current.id);
+      await onSaved(fresh);
+      setCurrent(fresh);
     } catch (err) { alert(err instanceof Error ? err.message : "Erro ao cancelar OS."); }
   }
 
   async function cancelAppointment(id: string) {
     const reason = prompt("Motivo do cancelamento deste atendimento:");
     if (!reason) return;
-    try { await api(`/api/appointments/${id}/cancel`, { method: "POST", body: JSON.stringify({ reason }) }); await reload(); }
+    try { await api(`/api/appointments/${id}/cancel`, { method: "POST", body: JSON.stringify({ reason }) }); await reload(); await refreshDetail(); }
     catch (err) { alert(err instanceof Error ? err.message : "Erro ao cancelar atendimento."); }
   }
   async function completeAppointment(id: string) {
-    try { await api(`/api/appointments/${id}/complete`, { method: "POST" }); await reload(); }
+    try { await api(`/api/appointments/${id}/complete`, { method: "POST" }); await reload(); await refreshDetail(); }
     catch (err) { alert(err instanceof Error ? err.message : "Erro ao concluir atendimento."); }
   }
   // Returns whether it succeeded (not void, unlike its siblings below) so
@@ -784,6 +926,7 @@ function OrderFormModal({ order, orders, clients, employees, services, branchId,
     try {
       await api(`/api/appointments/${id}`, { method: "PUT", body: JSON.stringify({ date, startTime, endTime }) });
       await reload();
+      await refreshDetail();
       setSuccess("Data do atendimento alterada com sucesso.");
       return true;
     } catch (err) {
@@ -800,6 +943,7 @@ function OrderFormModal({ order, orders, clients, employees, services, branchId,
     try {
       await api(`/api/appointments/${id}`, { method: "PUT", body: JSON.stringify({ priceOverride: value }) });
       await reload();
+      await refreshDetail();
       setSuccess("Valor do atendimento atualizado com sucesso.");
       return true;
     } catch (err) {
@@ -808,7 +952,7 @@ function OrderFormModal({ order, orders, clients, employees, services, branchId,
     }
   }
   async function assignEmployee(id: string, employeeId: string) {
-    try { await api(`/api/appointments/${id}`, { method: "PUT", body: JSON.stringify({ employeeId: employeeId || null }) }); await reload(); }
+    try { await api(`/api/appointments/${id}`, { method: "PUT", body: JSON.stringify({ employeeId: employeeId || null }) }); await reload(); await refreshDetail(); }
     catch (err) { alert(err instanceof Error ? err.message : "Erro ao atribuir funcionario."); }
   }
   // One entry point for changing an occurrence's status. "realizado" routes
@@ -817,16 +961,17 @@ function OrderFormModal({ order, orders, clients, employees, services, branchId,
   // see lib/order-status.ts). Never touches the OS or sibling occurrences.
   async function setAppointmentStatus(id: string, status: string) {
     if (status === "realizado") return completeAppointment(id);
-    try { await api(`/api/appointments/${id}`, { method: "PUT", body: JSON.stringify({ status }) }); await reload(); }
+    try { await api(`/api/appointments/${id}`, { method: "PUT", body: JSON.stringify({ status }) }); await reload(); await refreshDetail(); }
     catch (err) { alert(err instanceof Error ? err.message : "Erro ao alterar o status do atendimento."); }
   }
   async function removeAppointment(id: string) {
     if (!confirm("Remover este atendimento da OS? Esta acao nao pode ser desfeita.")) return;
-    try { await api(`/api/appointments/${id}`, { method: "DELETE" }); await reload(); }
+    try { await api(`/api/appointments/${id}`, { method: "DELETE" }); await reload(); await refreshDetail(); }
     catch (err) { alert(err instanceof Error ? err.message : "Erro ao remover atendimento."); }
   }
 
-  return <Modal title={current ? `Editar OS ${current.code}` : "Nova OS"} onClose={onClose}><form onSubmit={submit} className="space-y-4">{success && <p role="status" className="rounded-xl bg-emerald-50 p-3 text-sm font-bold text-emerald-700">{success}</p>}{error && <p role="alert" className="rounded-xl bg-rose-50 p-3 text-sm font-bold text-rose-600">{error}</p>}<div className="grid gap-3 md:grid-cols-3"><Select id="os-field-clientId" error={errorField === "clientId" ? error : undefined} value={form.clientId} set={(v) => setForm({ ...form, clientId: v })} options={clients.map((c) => [c.id, c.name])} /><Input id="os-field-eventDate" error={errorField === "eventDate" ? error : undefined} type="date" label="Data" value={form.eventDate} set={(v) => setForm({ ...form, eventDate: v })} /><Select id="os-field-status" error={errorField === "status" ? error : undefined} value={form.status} set={(v) => setForm({ ...form, status: v })} options={ORDER_STATUS_VALUES.map((s) => [s, orderStatusLabels[s]])} /><Input id="os-field-startTime" error={errorField === "startTime" ? error : undefined} label="Inicio" value={form.startTime} set={(v) => setForm({ ...form, startTime: v })} /><Input id="os-field-endTime" error={errorField === "endTime" ? error : undefined} label="Fim" value={form.endTime} set={(v) => setForm({ ...form, endTime: v })} /><label className="grid gap-1 text-xs font-black uppercase text-slate-500">Pagamento<Select value={form.paymentMethod} set={(v) => setForm({ ...form, paymentMethod: v })} options={paymentMethodOptions} /></label></div>{current?.paymentMethodLegacy && !current.paymentMethod && <p className="text-xs text-slate-400">Valor legado registrado anteriormente: <b>{current.paymentMethodLegacy}</b> (selecione uma opcao acima para substituir por um valor controlado).</p>}{current && (current.cancelledAt ? <p role="alert" className="rounded-xl bg-slate-100 p-3 text-sm font-bold text-slate-600">Esta OS foi cancelada{current.cancellationReason ? `: ${current.cancellationReason}` : "."}</p> : <button type="button" onClick={cancelOrder} className="text-xs font-bold text-rose-600 hover:underline">Cancelar OS</button>)}<ClientServiceAddressPanel client={selectedClient} addressState={clientAddressState} historical={preservesOsAddress ? current : null} onEditClient={onEditClient} />{!current && <div className="rounded-2xl bg-slate-50 p-4"><h4 className="font-black">Datas adicionais (opcional)</h4><p className="text-xs text-slate-500">Cria um atendimento para a data principal acima e mais um para cada data selecionada aqui, todos na mesma OS. Selecione varias datas no calendario e confirme de uma vez.</p><div className="mt-3"><MultiDatePicker onConfirm={addDates} disabledDates={[form.eventDate, ...extraDates]} /></div>{extraDates.length > 0 && <div className="mt-3 flex flex-wrap gap-2">{extraDates.map((d) => <span key={d} className="flex items-center gap-2 rounded-full bg-indigo-50 px-3 py-1 text-xs font-bold text-indigo-700">{dateOnlyLabel(d)}<button type="button" onClick={() => removeDate(d)} className="text-rose-600">x</button></span>)}</div>}</div>}<div id="os-field-items" tabIndex={-1} className={`rounded-2xl bg-slate-50 p-4 ${errorField === "items" ? "ring-2 ring-rose-500" : ""}`}><h4 className="font-black">Servicos contratados</h4><p className="mt-1 text-xs text-slate-500">O valor pode ser ajustado por servico apenas nesta OS; o preco padrao do servico (cadastro) nao e alterado.</p>{errorField === "items" && error && <p role="alert" className="mt-1 text-xs font-bold text-rose-600">{error}</p>}<div className="mt-3 flex flex-wrap gap-2"><select value={serviceId} onChange={(e) => setServiceId(e.target.value)} className="w-full rounded-xl border p-3">{services.map((s) => <option key={s.id} value={s.id}>{s.name} - {money(s.price)}</option>)}</select><button type="button" onClick={addService} className="rounded-xl bg-slate-950 px-4 font-black text-white">Adicionar</button></div>{form.items.map((i, idx) => <div key={idx} className="mt-2 flex flex-wrap items-center gap-2 rounded-xl bg-white p-3"><span className="min-w-0 flex-1 break-words">{services.find((s) => s.id === i.serviceId)?.name}</span><label className="flex shrink-0 items-center gap-1 text-[10px] font-black uppercase text-slate-500">Qtd<input type="number" min={1} value={i.quantity} onChange={(e) => setForm({ ...form, items: form.items.map((x, n) => n === idx ? { ...x, quantity: Number(e.target.value) } : x) })} className="w-16 rounded border p-2 text-sm normal-case font-normal text-slate-900" /></label><label className="flex shrink-0 items-center gap-1 text-[10px] font-black uppercase text-slate-500">Valor unit.<input type="number" min={0} step="0.01" value={i.unitPrice} onChange={(e) => setForm({ ...form, items: form.items.map((x, n) => n === idx ? { ...x, unitPrice: Number(e.target.value) } : x) })} className="w-24 rounded border p-2 text-sm normal-case font-normal text-slate-900" /></label><b className="shrink-0">{money(i.quantity * Number(i.unitPrice))}</b><button type="button" onClick={() => setForm({ ...form, items: form.items.filter((_, n) => n !== idx) })} className="shrink-0 font-bold text-rose-600">Remover</button></div>)}<p className="mt-3 text-right text-lg font-black">Total: {money(total)}</p></div><EmployeeMultiSelect employees={employees} selected={form.employeeIds} onChange={(ids) => setForm({ ...form, employeeIds: ids })} /><Text label="Observacoes" value={form.notes} set={(v) => setForm({ ...form, notes: v })} /><Input label="Assinatura" value={form.signatureName} set={(v) => setForm({ ...form, signatureName: v })} />{current?.recurringSchedules?.[0] && <RecurringScheduleSection schedule={current.recurringSchedules[0]} services={services} reload={reload} />}{current && <AppointmentsSection appointments={current.appointments} employees={employees} orderTotal={Number(current.totalAmount)} serviceLabel={current.items.map((i) => `${i.service?.name ?? "Servico"}${i.quantity > 1 ? ` x${i.quantity}` : ""}`).join(", ") || "-"} onCancel={cancelAppointment} onComplete={completeAppointment} onReschedule={rescheduleAppointment} onSetPrice={setAppointmentPrice} onAssign={assignEmployee} onSetStatus={setAppointmentStatus} onRemove={removeAppointment} onAdd={addAppointments} />}<button disabled={saving || !addressReady} className="rounded-xl bg-indigo-600 p-3 font-black text-white disabled:opacity-60">{saving ? "Salvando..." : "Salvar"}</button></form></Modal>;
+  return <Modal title={order ? `Editar OS ${order.code}` : "Nova OS"} onClose={onClose}><form onSubmit={submit} className="space-y-4">{success && <p role="status" className="rounded-xl bg-emerald-50 p-3 text-sm font-bold text-emerald-700">{success}</p>}{error && <p role="alert" className="rounded-xl bg-rose-50 p-3 text-sm font-bold text-rose-600">{error}</p>}{order && detailLoading && <p role="status" className="rounded-xl bg-indigo-50 p-3 text-sm font-bold text-indigo-700">Carregando detalhes da OS...</p>}{order && detailError && <p role="alert" className="rounded-xl bg-rose-50 p-3 text-sm font-bold text-rose-600">{detailError} <button type="button" onClick={loadDetail} className="underline">Tentar novamente</button></p>}<div className="grid gap-3 md:grid-cols-3">
+<Select id="os-field-clientId" error={errorField === "clientId" ? error : undefined} value={form.clientId} set={(v) => setForm({ ...form, clientId: v })} options={clients.map((c) => [c.id, c.name])} /><Input id="os-field-eventDate" error={errorField === "eventDate" ? error : undefined} type="date" label="Data" value={form.eventDate} set={(v) => setForm({ ...form, eventDate: v })} /><Select id="os-field-status" error={errorField === "status" ? error : undefined} value={form.status} set={(v) => setForm({ ...form, status: v })} options={ORDER_STATUS_VALUES.map((s) => [s, orderStatusLabels[s]])} /><Input id="os-field-startTime" error={errorField === "startTime" ? error : undefined} label="Inicio" value={form.startTime} set={(v) => setForm({ ...form, startTime: v })} /><Input id="os-field-endTime" error={errorField === "endTime" ? error : undefined} label="Fim" value={form.endTime} set={(v) => setForm({ ...form, endTime: v })} /><label className="grid gap-1 text-xs font-black uppercase text-slate-500">Pagamento<Select value={form.paymentMethod} set={(v) => setForm({ ...form, paymentMethod: v })} options={paymentMethodOptions} /></label></div>{current?.paymentMethodLegacy && !current.paymentMethod && <p className="text-xs text-slate-400">Valor legado registrado anteriormente: <b>{current.paymentMethodLegacy}</b> (selecione uma opcao acima para substituir por um valor controlado).</p>}{current && (current.cancelledAt ? <p role="alert" className="rounded-xl bg-slate-100 p-3 text-sm font-bold text-slate-600">Esta OS foi cancelada{current.cancellationReason ? `: ${current.cancellationReason}` : "."}</p> : <button type="button" onClick={cancelOrder} className="text-xs font-bold text-rose-600 hover:underline">Cancelar OS</button>)}<ClientServiceAddressPanel client={selectedClient} addressState={clientAddressState} historical={preservesOsAddress ? current : null} onEditClient={onEditClient} />{!current && <div className="rounded-2xl bg-slate-50 p-4"><h4 className="font-black">Datas adicionais (opcional)</h4><p className="text-xs text-slate-500">Cria um atendimento para a data principal acima e mais um para cada data selecionada aqui, todos na mesma OS. Selecione varias datas no calendario e confirme de uma vez.</p><div className="mt-3"><MultiDatePicker onConfirm={addDates} disabledDates={[form.eventDate, ...extraDates]} /></div>{extraDates.length > 0 && <div className="mt-3 flex flex-wrap gap-2">{extraDates.map((d) => <span key={d} className="flex items-center gap-2 rounded-full bg-indigo-50 px-3 py-1 text-xs font-bold text-indigo-700">{dateOnlyLabel(d)}<button type="button" onClick={() => removeDate(d)} className="text-rose-600">x</button></span>)}</div>}</div>}<div id="os-field-items" tabIndex={-1} className={`rounded-2xl bg-slate-50 p-4 ${errorField === "items" ? "ring-2 ring-rose-500" : ""}`}><h4 className="font-black">Servicos contratados</h4><p className="mt-1 text-xs text-slate-500">O valor pode ser ajustado por servico apenas nesta OS; o preco padrao do servico (cadastro) nao e alterado.</p>{errorField === "items" && error && <p role="alert" className="mt-1 text-xs font-bold text-rose-600">{error}</p>}<div className="mt-3 flex flex-wrap gap-2"><select value={serviceId} onChange={(e) => setServiceId(e.target.value)} className="w-full rounded-xl border p-3">{services.map((s) => <option key={s.id} value={s.id}>{s.name} - {money(s.price)}</option>)}</select><button type="button" onClick={addService} className="rounded-xl bg-slate-950 px-4 font-black text-white">Adicionar</button></div>{form.items.map((i, idx) => <div key={idx} className="mt-2 flex flex-wrap items-center gap-2 rounded-xl bg-white p-3"><span className="min-w-0 flex-1 break-words">{services.find((s) => s.id === i.serviceId)?.name}</span><label className="flex shrink-0 items-center gap-1 text-[10px] font-black uppercase text-slate-500">Qtd<input type="number" min={1} value={i.quantity} onChange={(e) => setForm({ ...form, items: form.items.map((x, n) => n === idx ? { ...x, quantity: Number(e.target.value) } : x) })} className="w-16 rounded border p-2 text-sm normal-case font-normal text-slate-900" /></label><label className="flex shrink-0 items-center gap-1 text-[10px] font-black uppercase text-slate-500">Valor unit.<input type="number" min={0} step="0.01" value={i.unitPrice} onChange={(e) => setForm({ ...form, items: form.items.map((x, n) => n === idx ? { ...x, unitPrice: Number(e.target.value) } : x) })} className="w-24 rounded border p-2 text-sm normal-case font-normal text-slate-900" /></label><b className="shrink-0">{money(i.quantity * Number(i.unitPrice))}</b><button type="button" onClick={() => setForm({ ...form, items: form.items.filter((_, n) => n !== idx) })} className="shrink-0 font-bold text-rose-600">Remover</button></div>)}<p className="mt-3 text-right text-lg font-black">Total: {money(total)}</p></div><EmployeeMultiSelect employees={employees} selected={form.employeeIds} onChange={(ids) => setForm({ ...form, employeeIds: ids })} /><Text label="Observacoes" value={form.notes} set={(v) => setForm({ ...form, notes: v })} /><Input label="Assinatura" value={form.signatureName} set={(v) => setForm({ ...form, signatureName: v })} />{current?.recurringSchedules?.[0] && <RecurringScheduleSection schedule={current.recurringSchedules[0]} services={services} reload={reload} />}{current && <AppointmentsSection appointments={current.appointments} employees={employees} orderTotal={Number(current.totalAmount)} serviceLabel={current.items.map((i) => `${i.service?.name ?? "Servico"}${i.quantity > 1 ? ` x${i.quantity}` : ""}`).join(", ") || "-"} onCancel={cancelAppointment} onComplete={completeAppointment} onReschedule={rescheduleAppointment} onSetPrice={setAppointmentPrice} onAssign={assignEmployee} onSetStatus={setAppointmentStatus} onRemove={removeAppointment} onAdd={addAppointments} />}<button disabled={saving || !addressReady || !detailReady} className="rounded-xl bg-indigo-600 p-3 font-black text-white disabled:opacity-60">{saving ? "Salvando..." : "Salvar"}</button></form></Modal>;
 }
 
 // Each row = one occurrence (Appointment) of this single OS. Every occurrence
@@ -979,15 +1124,36 @@ function RecurringScheduleSection({ schedule, services, reload }: { schedule: Re
 // function OS saves already use (never clients/employees/services, which a
 // recurrence creation never touches); reload (the full loadAll()) is only a
 // fallback if the follow-up GET of the created order itself fails.
-function RecurrenceModal({ clients, services, employees, branchId, close, onOrderCreated, reload, onEditClient, sourceOrder = null, mode = "create" }: { clients: Client[]; services: Service[]; employees: Employee[]; branchId: string | null; close: () => void; onOrderCreated: (order: Order) => Promise<void>; reload: () => Promise<void>; onEditClient?: (clientId: string) => void; sourceOrder?: Order | null; mode?: "create" | "transform" | "template" }) {
-  // Two prefilled modes reuse this exact same form/modal instead of a second
-  // implementation (see "Transformar em recorrencia"):
-  //  - "transform": attaches a RecurringSchedule to sourceOrder itself (POST
-  //    /api/orders/:id/transform-to-recurring) - no new OS, client/service
-  //    locked to what the OS already has.
-  //  - "template": creates a brand-new OS pre-filled from sourceOrder (same
-  //    POST /api/recurring-schedules "create" uses) - offered for a
-  //    Realizada OS, whose own history must never be rewritten in place.
+function RecurrenceModal({ clients, services, employees, branchId, close, onOrderCreated, reload, onEditClient, orderDetailCache, sourceOrder = null, mode = "create" }: { clients: Client[]; services: Service[]; employees: Employee[]; branchId: string | null; close: () => void; onOrderCreated: (order: Order) => Promise<void>; reload: () => Promise<void>; onEditClient?: (clientId: string) => void; orderDetailCache: OrderDetailCache<Order>; sourceOrder?: OrderSummary | null; mode?: "create" | "transform" | "template" }) {
+  // `sourceOrder` is only ever the slim listing shape now - "transform"/
+  // "template" both need the OS's full items/employees to prefill this form,
+  // which loads on demand below into `sourceDetail` (same cache every other
+  // full-detail consumer uses). Until it resolves, the prefilled fields
+  // below simply behave as if there were no sourceOrder at all (plain
+  // defaults) - submit is disabled meanwhile so nothing can be saved from
+  // incomplete data (see sourceLoading/detailReady).
+  const [sourceDetail, setSourceDetail] = useState<Order | null>(() => (sourceOrder ? orderDetailCache.get(sourceOrder.id) ?? null : null));
+  const [sourceLoading, setSourceLoading] = useState(!!sourceOrder && !sourceDetail);
+  const [sourceError, setSourceError] = useState("");
+
+  const buildFormFromSource = useCallback(
+    (o: Order) => ({
+      clientId: o.clientId,
+      serviceId: o.items[0]?.serviceId || services[0]?.id || "",
+      frequency: "monthly" as string,
+      interval: 1,
+      daysOfWeek: [new Date(o.eventDate).getUTCDay()] as number[],
+      dayOfMonth: new Date(o.eventDate).getUTCDate(),
+      startTime: o.startTime,
+      endTime: o.endTime,
+      price: Number(o.totalAmount),
+      startDate: dateOnly(o.eventDate),
+      endDate: "",
+      employeeIds: o.employees.map((x) => x.employee.id),
+    }),
+    [services]
+  );
+
   // `price` here is ONLY the recurrence's own "valor mensal" (RecurringSchedule.price)
   // - for a plain create it defaults to the selected service's own cadastro
   // price; when prefilled from an OS it defaults to that OS's own real total
@@ -995,25 +1161,42 @@ function RecurrenceModal({ clients, services, employees, branchId, close, onOrde
   // value - see lib/order-total.ts - so this is a far better starting point
   // than a single service's price). `priceTouched` stops either default from
   // silently overwriting a deliberate manual value once the user has typed one.
-  const [form, setForm] = useState(() => sourceOrder ? {
-    clientId: sourceOrder.clientId,
-    serviceId: sourceOrder.items[0]?.serviceId || services[0]?.id || "",
-    frequency: "monthly" as string,
-    interval: 1,
-    daysOfWeek: [new Date(sourceOrder.eventDate).getUTCDay()] as number[],
-    dayOfMonth: new Date(sourceOrder.eventDate).getUTCDate(),
-    startTime: sourceOrder.startTime,
-    endTime: sourceOrder.endTime,
-    price: Number(sourceOrder.totalAmount),
-    startDate: dateOnly(sourceOrder.eventDate),
-    endDate: "",
-    employeeIds: sourceOrder.employees.map((x) => x.employee.id),
-  } : { clientId: clients[0]?.id || "", serviceId: services[0]?.id || "", frequency: "monthly" as string, interval: 1, daysOfWeek: [1] as number[], dayOfMonth: 10, startTime: "09:00", endTime: "11:00", price: Number(services[0]?.price ?? 0), startDate: dateOnly(), endDate: "", employeeIds: [] as string[] });
-  const [priceTouched, setPriceTouched] = useState(!!sourceOrder);
+  const [form, setForm] = useState(() => {
+    if (sourceOrder) {
+      const cached = orderDetailCache.get(sourceOrder.id);
+      if (cached) return buildFormFromSource(cached);
+    }
+    return { clientId: clients[0]?.id || "", serviceId: services[0]?.id || "", frequency: "monthly" as string, interval: 1, daysOfWeek: [1] as number[], dayOfMonth: 10, startTime: "09:00", endTime: "11:00", price: Number(services[0]?.price ?? 0), startDate: dateOnly(), endDate: "", employeeIds: [] as string[] };
+  });
+  const [priceTouched, setPriceTouched] = useState(!!sourceDetail);
   const [extraDates, setExtraDates] = useState<string[]>([]);
   const [error, setError] = useState("");
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
+
+  const loadSource = useCallback(() => {
+    if (!sourceOrder) return;
+    setSourceLoading(true);
+    setSourceError("");
+    orderDetailCache
+      .fetch(sourceOrder.id)
+      .then((fetched) => {
+        setSourceDetail(fetched);
+        setForm(buildFormFromSource(fetched));
+        setPriceTouched(true);
+      })
+      .catch((err) => setSourceError(err instanceof Error ? err.message : "Nao foi possivel carregar os detalhes da OS."))
+      .finally(() => setSourceLoading(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sourceOrder?.id]);
+
+  // Same mount-only, id-fixed-for-this-instance pattern as OrderFormModal's
+  // own loadDetail effect.
+  useEffect(() => {
+    if (!sourceOrder || sourceDetail) return;
+    loadSource();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   // Same rule as the OS form: the OS this recurrence creates snapshots its
   // address from the client's cadastro (see app/api/recurring-schedules).
   const selectedClient = clients.find((c) => c.id === form.clientId) ?? null;
@@ -1021,13 +1204,20 @@ function RecurrenceModal({ clients, services, employees, branchId, close, onOrde
   // "transform" can only ever use one of the OS's own already-contracted
   // services (the backend re-validates this too) - "create"/"template" pick
   // from the whole branch catalog, same as before.
-  const serviceOptions = mode === "transform" && sourceOrder ? services.filter((s) => sourceOrder.items.some((i) => i.serviceId === s.id)) : services;
+  const serviceOptions = mode === "transform" && sourceDetail ? services.filter((s) => sourceDetail.items.some((i) => i.serviceId === s.id)) : services;
   const selectedService = services.find((s) => s.id === form.serviceId) ?? null;
   const serviceUnitPrice = Number(selectedService?.price ?? 0);
+  // Never let "transform"/"template" save against a sourceOrder whose full
+  // detail has not actually loaded yet.
+  const sourceReady = !sourceOrder || !!sourceDetail;
   async function submit(e: FormEvent) {
     e.preventDefault();
     if (saving) return; // ignore a second click/Enter while the first submit is still in flight
     setError(""); setFieldErrors({});
+    if (!sourceReady) {
+      setError("Aguarde o carregamento dos dados da OS.");
+      return;
+    }
     if (clientAddressState !== "ok") {
       setError(clientAddressErrorMessage(clientAddressState, selectedClient));
       return;
@@ -1081,12 +1271,12 @@ function RecurrenceModal({ clients, services, employees, branchId, close, onOrde
   }
   const title = mode === "transform" ? `Transformar OS ${sourceOrder?.code} em recorrencia` : mode === "template" ? `Nova recorrencia a partir da OS ${sourceOrder?.code}` : "Nova Recorrencia";
   const savingLabel = mode === "transform" ? "Transformando em recorrencia..." : mode === "template" ? "Criando recorrencia..." : "Salvando...";
-  return <Modal title={title} onClose={close}><form onSubmit={submit} className="grid gap-3">{sourceOrder && <p className="rounded-xl bg-indigo-50 p-3 text-sm font-bold text-indigo-700">{mode === "transform" ? "Esta OS sera transformada em uma recorrencia. Os dados atuais foram preenchidos automaticamente." : "Uma nova recorrencia sera criada usando os dados desta OS como modelo. Os dados atuais foram preenchidos automaticamente."}</p>}{Object.keys(fieldErrors).length > 0 ? <FieldErrorSummary title={error} errors={fieldErrors} fieldPrefix="recurrence-field-" /> : error && <p role="alert" className="rounded-xl bg-rose-50 p-3 text-sm font-bold text-rose-600">{error}</p>}<Select value={form.clientId} set={(v) => setForm({ ...form, clientId: v })} options={clients.map((c) => [c.id, c.name])} disabled={mode === "transform"} /><Select value={form.serviceId} set={(v) => { const s = services.find((x) => x.id === v); setForm((prev) => ({ ...prev, serviceId: v, price: priceTouched ? prev.price : Number(s?.price ?? 0) })); }} options={serviceOptions.map((s) => [s.id, `${s.name} - ${money(s.price)}`])} />{sourceOrder ? <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4"><h4 className="text-xs font-black uppercase text-slate-500">Servicos contratados nesta OS</h4>{sourceOrder.items.map((i, idx) => <div key={i.id ?? idx} className="mt-2 grid grid-cols-3 gap-2 text-sm"><p><b>{i.service?.name ?? "Servico"}</b></p><p>Quantidade: {i.quantity}</p><p className="text-right font-black">{money(i.quantity * Number(i.unitPrice))}</p></div>)}<p className="mt-3 text-right text-sm font-black">Total por atendimento: {money(sourceOrder.totalAmount)}</p></div> : selectedService && <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4"><h4 className="text-xs font-black uppercase text-slate-500">Servicos contratados</h4><div className="mt-2 grid grid-cols-3 gap-2 text-sm"><p><b>{selectedService.name}</b></p><p>Quantidade: 1</p><p className="text-right font-black">{money(serviceUnitPrice)}</p></div></div>}<div className="grid gap-3 md:grid-cols-2"><Select value={form.frequency} set={(v) => setForm({ ...form, frequency: v })} options={[["weekly", "Semanal"], ["biweekly", "Quinzenal"], ["monthly", "Mensal"]]} />{form.frequency !== "biweekly" && <NumberInput label={form.frequency === "weekly" ? "Repetir a cada (semanas)" : "Repetir a cada (meses)"} value={form.interval} set={(v) => setForm({ ...form, interval: v })} />}</div>{(form.frequency === "weekly" || form.frequency === "biweekly") && <div className="grid gap-2"><span className="text-xs font-black uppercase text-slate-500">Dias da semana</span><p className="text-xs font-normal normal-case text-slate-500">{form.frequency === "biweekly" ? "Selecione um ou mais dias da semana. A recorrencia sera repetida a cada 14 dias." : "Selecione um ou mais dias para definir em quais dias da semana o servico sera realizado."}</p><WeekdaySelector id="recurrence-field-daysOfWeek" selected={form.daysOfWeek} onChange={(days) => { setForm({ ...form, daysOfWeek: days }); if (fieldErrors.daysOfWeek) setFieldErrors({}); }} error={fieldErrors.daysOfWeek} /></div>}{form.frequency === "monthly" && <NumberInput label="Dia do mes" value={form.dayOfMonth} set={(v) => setForm({ ...form, dayOfMonth: v })} />}<div className="grid gap-3 md:grid-cols-2"><Input label="Horario inicio" value={form.startTime} set={(v) => setForm({ ...form, startTime: v })} /><Input label="Horario fim" value={form.endTime} set={(v) => setForm({ ...form, endTime: v })} /></div><div className="rounded-2xl border border-slate-200 p-4"><h4 className="text-xs font-black uppercase text-slate-500">Cobranca da recorrencia</h4><div className="mt-2"><NumberInput label="Valor mensal" value={form.price} set={(v) => { setPriceTouched(true); setForm({ ...form, price: v }); }} /></div><p className="mt-2 text-xs text-slate-500">Valor mensal e o total cobrado por mes pela recorrencia e nao representa o valor de cada atendimento.</p></div><div className="grid gap-3 md:grid-cols-2"><Input type="date" label="Data inicial" value={form.startDate} set={(v) => setForm({ ...form, startDate: v })} /><Input type="date" label="Data final (opcional)" value={form.endDate} set={(v) => setForm({ ...form, endDate: v })} /></div><ClientServiceAddressPanel client={selectedClient} addressState={clientAddressState} onEditClient={onEditClient} /><EmployeeMultiSelect employees={employees} selected={form.employeeIds} onChange={(ids) => setForm({ ...form, employeeIds: ids })} /><div className="rounded-2xl bg-slate-50 p-4"><h4 className="font-black">Datas avulsas adicionais (opcional)</h4><p className="text-xs text-slate-500">Alem das datas geradas automaticamente pela recorrencia, selecione no calendario atendimentos avulsos para a mesma OS e confirme de uma vez.</p><div className="mt-3"><MultiDatePicker onConfirm={(dates) => setExtraDates((prev) => [...new Set([...prev, ...dates])].sort())} disabledDates={extraDates} /></div>{extraDates.length > 0 && <div className="mt-3 flex flex-wrap gap-2">{extraDates.map((d) => <span key={d} className="flex items-center gap-2 rounded-full bg-indigo-50 px-3 py-1 text-xs font-bold text-indigo-700">{dateOnlyLabel(d)}<button type="button" onClick={() => setExtraDates(extraDates.filter((x) => x !== d))} className="text-rose-600">x</button></span>)}</div>}</div><p className="text-xs text-slate-500">Os atendimentos sao gerados automaticamente para os proximos meses e continuam sendo gerados de forma controlada enquanto a recorrencia estiver ativa.</p><button disabled={clientAddressState !== "ok" || saving} className="rounded-xl bg-indigo-600 p-3 font-black text-white disabled:opacity-60">{saving ? savingLabel : "Salvar"}</button></form></Modal>;
+  return <Modal title={title} onClose={close}><form onSubmit={submit} className="grid gap-3">{sourceOrder && <p className="rounded-xl bg-indigo-50 p-3 text-sm font-bold text-indigo-700">{mode === "transform" ? "Esta OS sera transformada em uma recorrencia. Os dados atuais foram preenchidos automaticamente." : "Uma nova recorrencia sera criada usando os dados desta OS como modelo. Os dados atuais foram preenchidos automaticamente."}</p>}{sourceOrder && sourceLoading && <p role="status" className="rounded-xl bg-indigo-50 p-3 text-sm font-bold text-indigo-700">Carregando dados da OS...</p>}{sourceOrder && sourceError && <p role="alert" className="rounded-xl bg-rose-50 p-3 text-sm font-bold text-rose-600">{sourceError} <button type="button" onClick={loadSource} className="underline">Tentar novamente</button></p>}{Object.keys(fieldErrors).length > 0 ? <FieldErrorSummary title={error} errors={fieldErrors} fieldPrefix="recurrence-field-" /> : error && <p role="alert" className="rounded-xl bg-rose-50 p-3 text-sm font-bold text-rose-600">{error}</p>}<Select value={form.clientId} set={(v) => setForm({ ...form, clientId: v })} options={clients.map((c) => [c.id, c.name])} disabled={mode === "transform"} /><Select value={form.serviceId} set={(v) => { const s = services.find((x) => x.id === v); setForm((prev) => ({ ...prev, serviceId: v, price: priceTouched ? prev.price : Number(s?.price ?? 0) })); }} options={serviceOptions.map((s) => [s.id, `${s.name} - ${money(s.price)}`])} />{sourceDetail ? <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4"><h4 className="text-xs font-black uppercase text-slate-500">Servicos contratados nesta OS</h4>{sourceDetail.items.map((i, idx) => <div key={i.id ?? idx} className="mt-2 grid grid-cols-3 gap-2 text-sm"><p><b>{i.service?.name ?? "Servico"}</b></p><p>Quantidade: {i.quantity}</p><p className="text-right font-black">{money(i.quantity * Number(i.unitPrice))}</p></div>)}<p className="mt-3 text-right text-sm font-black">Total por atendimento: {money(sourceDetail.totalAmount)}</p></div> : !sourceOrder && selectedService && <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4"><h4 className="text-xs font-black uppercase text-slate-500">Servicos contratados</h4><div className="mt-2 grid grid-cols-3 gap-2 text-sm"><p><b>{selectedService.name}</b></p><p>Quantidade: 1</p><p className="text-right font-black">{money(serviceUnitPrice)}</p></div></div>}<div className="grid gap-3 md:grid-cols-2"><Select value={form.frequency} set={(v) => setForm({ ...form, frequency: v })} options={[["weekly", "Semanal"], ["biweekly", "Quinzenal"], ["monthly", "Mensal"]]} />{form.frequency !== "biweekly" && <NumberInput label={form.frequency === "weekly" ? "Repetir a cada (semanas)" : "Repetir a cada (meses)"} value={form.interval} set={(v) => setForm({ ...form, interval: v })} />}</div>{(form.frequency === "weekly" || form.frequency === "biweekly") && <div className="grid gap-2"><span className="text-xs font-black uppercase text-slate-500">Dias da semana</span><p className="text-xs font-normal normal-case text-slate-500">{form.frequency === "biweekly" ? "Selecione um ou mais dias da semana. A recorrencia sera repetida a cada 14 dias." : "Selecione um ou mais dias para definir em quais dias da semana o servico sera realizado."}</p><WeekdaySelector id="recurrence-field-daysOfWeek" selected={form.daysOfWeek} onChange={(days) => { setForm({ ...form, daysOfWeek: days }); if (fieldErrors.daysOfWeek) setFieldErrors({}); }} error={fieldErrors.daysOfWeek} /></div>}{form.frequency === "monthly" && <NumberInput label="Dia do mes" value={form.dayOfMonth} set={(v) => setForm({ ...form, dayOfMonth: v })} />}<div className="grid gap-3 md:grid-cols-2"><Input label="Horario inicio" value={form.startTime} set={(v) => setForm({ ...form, startTime: v })} /><Input label="Horario fim" value={form.endTime} set={(v) => setForm({ ...form, endTime: v })} /></div><div className="rounded-2xl border border-slate-200 p-4"><h4 className="text-xs font-black uppercase text-slate-500">Cobranca da recorrencia</h4><div className="mt-2"><NumberInput label="Valor mensal" value={form.price} set={(v) => { setPriceTouched(true); setForm({ ...form, price: v }); }} /></div><p className="mt-2 text-xs text-slate-500">Valor mensal e o total cobrado por mes pela recorrencia e nao representa o valor de cada atendimento.</p></div><div className="grid gap-3 md:grid-cols-2"><Input type="date" label="Data inicial" value={form.startDate} set={(v) => setForm({ ...form, startDate: v })} /><Input type="date" label="Data final (opcional)" value={form.endDate} set={(v) => setForm({ ...form, endDate: v })} /></div><ClientServiceAddressPanel client={selectedClient} addressState={clientAddressState} onEditClient={onEditClient} /><EmployeeMultiSelect employees={employees} selected={form.employeeIds} onChange={(ids) => setForm({ ...form, employeeIds: ids })} /><div className="rounded-2xl bg-slate-50 p-4"><h4 className="font-black">Datas avulsas adicionais (opcional)</h4><p className="text-xs text-slate-500">Alem das datas geradas automaticamente pela recorrencia, selecione no calendario atendimentos avulsos para a mesma OS e confirme de uma vez.</p><div className="mt-3"><MultiDatePicker onConfirm={(dates) => setExtraDates((prev) => [...new Set([...prev, ...dates])].sort())} disabledDates={extraDates} /></div>{extraDates.length > 0 && <div className="mt-3 flex flex-wrap gap-2">{extraDates.map((d) => <span key={d} className="flex items-center gap-2 rounded-full bg-indigo-50 px-3 py-1 text-xs font-bold text-indigo-700">{dateOnlyLabel(d)}<button type="button" onClick={() => setExtraDates(extraDates.filter((x) => x !== d))} className="text-rose-600">x</button></span>)}</div>}</div><p className="text-xs text-slate-500">Os atendimentos sao gerados automaticamente para os proximos meses e continuam sendo gerados de forma controlada enquanto a recorrencia estiver ativa.</p><button disabled={clientAddressState !== "ok" || saving || !sourceReady} className="rounded-xl bg-indigo-600 p-3 font-black text-white disabled:opacity-60">{saving ? savingLabel : "Salvar"}</button></form></Modal>;
 }
 
 // Downloads the server-generated PDF (lib/pdf.ts via GET /api/orders/:id/pdf)
 // as a real file.
-async function downloadOrderPdf(order: Order) {
+async function downloadOrderPdf(order: OrderCore) {
   try {
     const res = await fetch(`/api/orders/${order.id}/pdf`);
     if (!res.ok) {
@@ -1115,7 +1305,7 @@ async function downloadOrderPdf(order: Order) {
 // Opens a real top-level tab (not a hidden iframe) so the browser's own PDF
 // viewer and print controls are available as a fallback if the automatic
 // print() call is blocked or unsupported by the viewer.
-async function printOrderPdf(order: Order) {
+async function printOrderPdf(order: OrderCore) {
   const printWindow = window.open("", "_blank");
   if (!printWindow) {
     alert("Nao foi possivel abrir a janela de impressao. Verifique se o navegador esta bloqueando pop-ups para este site.");
@@ -1149,7 +1339,7 @@ async function printOrderPdf(order: Order) {
 // it - see app/api/orders/[id]/send/route.ts). WhatsApp only ever opens a
 // wa.me link client-side (see lib/whatsapp.ts) and best-effort logs that the
 // user did so - the UI must never claim an automatic send for it.
-function SendOrderModal({ order, channel, onClose }: { order: Order; channel: SendChannel; onClose: () => void }) {
+function SendOrderModal({ order, channel, onClose }: { order: OrderCore; channel: SendChannel; onClose: () => void }) {
   const isEmail = channel === "email";
   const [to, setTo] = useState(isEmail ? order.client?.email || "" : order.client?.phone || "");
   const [subject, setSubject] = useState(`Ordem de Servico ${order.code} - LeeveLimpeza`);
@@ -1232,61 +1422,86 @@ function SendOrderModal({ order, channel, onClose }: { order: Order; channel: Se
 // Only ever renders values already present on `order` (server-computed
 // totalAmount, real appointment/employee records) - never re-derives
 // numbers on the client.
-function PrintOrder({ order, close }: { order: Order; close: () => void }) {
-  const employeeNames = order.employees.map((e) => e.employee.name).join(", ") || "Equipe nao definida";
+function PrintOrder({ order, orderDetailCache, close }: { order: OrderSummary; orderDetailCache: OrderDetailCache<Order>; close: () => void }) {
+  const [detail, setDetail] = useState<Order | null>(() => orderDetailCache.get(order.id) ?? null);
+  const [loading, setLoading] = useState(!detail);
+  const [loadError, setLoadError] = useState("");
   const [sending, setSending] = useState<SendChannel | null>(null);
+
+  const load = useCallback(() => {
+    setLoading(true);
+    setLoadError("");
+    orderDetailCache
+      .fetch(order.id)
+      .then(setDetail)
+      .catch((err) => setLoadError(err instanceof Error ? err.message : "Nao foi possivel carregar os detalhes da OS."))
+      .finally(() => setLoading(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [order.id]);
+
+  // Same mount-only, id-fixed-for-this-instance pattern as OrderFormModal's
+  // own loadDetail effect - see its comment for why this is race-free.
+  useEffect(() => {
+    if (!detail) load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  if (loading) return <Modal title={`OS ${order.code}`} onClose={close}><p role="status" className="text-sm text-slate-500">Carregando detalhes da OS...</p></Modal>;
+  if (loadError || !detail) return <Modal title={`OS ${order.code}`} onClose={close}><p role="alert" className="rounded-xl bg-rose-50 p-4 text-sm font-bold text-rose-600">{loadError || "Nao foi possivel carregar os detalhes da OS."} <button type="button" onClick={load} className="underline">Tentar novamente</button></p></Modal>;
+
+  const employeeNames = detail.employees.map((e) => e.employee.name).join(", ") || "Equipe nao definida";
   // Same source and shape as lib/pdf.ts's own "Recorrencia" section - see the
   // shared helpers in lib/recurrence-label.ts.
-  const schedule = order.recurringSchedules?.[0];
-  const nonCancelledCount = order.appointments.filter((a) => !a.cancelledAt).length;
-  // order.total is the API's own already-computed real total (see
+  const schedule = detail.recurringSchedules?.[0];
+  const nonCancelledCount = detail.appointments.filter((a) => !a.cancelledAt).length;
+  // detail.total is the API's own already-computed real total (see
   // lib/order-total.ts) - reused here instead of recomputing the same
   // nonCancelledCount x totalAmount formula a second time client-side.
-  const recurrenceTotal = Number(order.total);
-  return <><Modal title={`OS ${order.code}`} onClose={close}><div className="print-page mx-auto max-w-4xl rounded-2xl border p-8">
+  const recurrenceTotal = Number(detail.total);
+  return <><Modal title={`OS ${detail.code}`} onClose={close}><div className="print-page mx-auto max-w-4xl rounded-2xl border p-8">
     <div className="flex flex-wrap items-start justify-between gap-4 border-b pb-6">
-      <div><h1 className="text-3xl font-black">LeeveLimpeza</h1><p className="text-sm text-slate-500">Ordem de Servico</p>{order.branch && <p className="mt-1 text-xs text-slate-400">{order.branch.name} - {order.branch.city}</p>}</div>
-      <div className="text-right"><p className="font-mono text-lg font-black">{order.code}</p><p className="text-xs text-slate-500">Emitido em {new Date().toLocaleDateString("pt-BR")}</p><div className="mt-2"><Badge status={order.status} cancelledAt={order.cancelledAt} /></div></div>
+      <div><h1 className="text-3xl font-black">LeeveLimpeza</h1><p className="text-sm text-slate-500">Ordem de Servico</p>{detail.branch && <p className="mt-1 text-xs text-slate-400">{detail.branch.name} - {detail.branch.city}</p>}</div>
+      <div className="text-right"><p className="font-mono text-lg font-black">{detail.code}</p><p className="text-xs text-slate-500">Emitido em {new Date().toLocaleDateString("pt-BR")}</p><div className="mt-2"><Badge status={detail.status} cancelledAt={detail.cancelledAt} /></div></div>
     </div>
 
     <section className="mt-6">
       <h3 className="text-xs font-black uppercase text-slate-400">Cliente</h3>
       <div className="mt-2 grid gap-1 text-sm md:grid-cols-2">
-        <p><b>Nome:</b> {order.client?.name || "-"}</p>
-        {order.client?.phone && <p><b>Telefone:</b> {order.client.phone}</p>}
-        {order.client?.email && <p><b>E-mail:</b> {order.client.email}</p>}
-        {order.client?.address && <p className="md:col-span-2"><b>Endereco:</b> {order.client.address}</p>}
+        <p><b>Nome:</b> {detail.client?.name || "-"}</p>
+        {detail.client?.phone && <p><b>Telefone:</b> {detail.client.phone}</p>}
+        {detail.client?.email && <p><b>E-mail:</b> {detail.client.email}</p>}
+        {detail.client?.address && <p className="md:col-span-2"><b>Endereco:</b> {detail.client.address}</p>}
       </div>
     </section>
 
     <section className="mt-6">
       <h3 className="text-xs font-black uppercase text-slate-400">Endereco do atendimento</h3>
-      {hasStructuredOrderAddress(order) ? (
+      {hasStructuredOrderAddress(detail) ? (
         <div className="mt-2 grid gap-1 text-sm">
-          <p><b>Rua / Logradouro:</b> {order.addressStreet}</p>
-          <p><b>Numero:</b> {order.addressNumber}</p>
-          <p><b>Bairro:</b> {order.addressNeighborhood}</p>
-          <p><b>Cidade:</b> {order.addressCity}</p>
-          <p><b>UF:</b> {order.addressState}</p>
-          {order.addressZip && <p><b>CEP:</b> {order.addressZip}</p>}
-          {order.addressReference && <p><b>Ponto de referencia:</b> {order.addressReference}</p>}
+          <p><b>Rua / Logradouro:</b> {detail.addressStreet}</p>
+          <p><b>Numero:</b> {detail.addressNumber}</p>
+          <p><b>Bairro:</b> {detail.addressNeighborhood}</p>
+          <p><b>Cidade:</b> {detail.addressCity}</p>
+          <p><b>UF:</b> {detail.addressState}</p>
+          {detail.addressZip && <p><b>CEP:</b> {detail.addressZip}</p>}
+          {detail.addressReference && <p><b>Ponto de referencia:</b> {detail.addressReference}</p>}
         </div>
       ) : (
-        <p className="mt-2 text-sm">{order.location}</p>
+        <p className="mt-2 text-sm">{detail.location}</p>
       )}
     </section>
 
     <section className="mt-6">
       <h3 className="text-xs font-black uppercase text-slate-400">Servicos contratados</h3>
       <table className="report-table mt-2 w-full text-sm"><thead><tr><th className="border-b p-2 text-left">Servico</th><th className="border-b p-2 text-left">Qtd</th><th className="border-b p-2 text-right">Valor</th></tr></thead>
-        <tbody>{order.items.map((i) => <tr key={i.id}><td className="border-b p-2">{i.service?.name}</td><td className="border-b p-2">{i.quantity}x</td><td className="border-b p-2 text-right">{money(i.quantity * Number(i.unitPrice))}</td></tr>)}</tbody></table>
+        <tbody>{detail.items.map((i) => <tr key={i.id}><td className="border-b p-2">{i.service?.name}</td><td className="border-b p-2">{i.quantity}x</td><td className="border-b p-2 text-right">{money(i.quantity * Number(i.unitPrice))}</td></tr>)}</tbody></table>
     </section>
 
     <section className="mt-6 grid gap-1 text-sm">
       <h3 className="text-xs font-black uppercase text-slate-400">Valores</h3>
       <p><b>Equipe:</b> {employeeNames}</p>
-      <p><b>Forma de pagamento:</b> {paymentMethodLabel(order)}</p>
-      <p className="mt-2 text-right text-xl font-black">Total: {money(order.totalAmount)}</p>
+      <p><b>Forma de pagamento:</b> {paymentMethodLabel(detail)}</p>
+      <p className="mt-2 text-right text-xl font-black">Total: {money(detail.totalAmount)}</p>
     </section>
 
     {schedule && <section className="mt-6 break-inside-avoid">
@@ -1301,34 +1516,34 @@ function PrintOrder({ order, close }: { order: Order; close: () => void }) {
             inalterada: order.totalAmount x ocorrencias) - este e o valor
             mensal contratado para a recorrencia (RecurringSchedule.price). */}
         <p className="md:col-span-2 font-bold"><b>Valor mensal da recorrencia:</b> {money(schedule.price)}</p>
-        <p><b>Ocorrencias geradas:</b> {order.appointments.length}</p>
+        <p><b>Ocorrencias geradas:</b> {detail.appointments.length}</p>
         {!schedule.active && <p className="text-slate-400">(recorrencia encerrada/inativa)</p>}
       </div>
     </section>}
 
-    {order.appointments.length > 0 && <section className="mt-6">
-      <h3 className="text-xs font-black uppercase text-slate-400">{schedule ? `Atendimentos da recorrencia (${order.appointments.length})` : `Atendimentos (${order.appointments.length})`}</h3>
+    {detail.appointments.length > 0 && <section className="mt-6">
+      <h3 className="text-xs font-black uppercase text-slate-400">{schedule ? `Atendimentos da recorrencia (${detail.appointments.length})` : `Atendimentos (${detail.appointments.length})`}</h3>
       <table className="report-table mt-2 w-full text-sm">
         <thead><tr><th className="border-b p-2 text-left">No</th><th className="border-b p-2 text-left">Data</th><th className="border-b p-2 text-left">Horario</th><th className="border-b p-2 text-left">Funcionario</th><th className="border-b p-2 text-left">Status</th><th className="border-b p-2 text-right">Valor</th></tr></thead>
-        <tbody>{order.appointments.map((a, index) => <tr key={a.id} className={a.cancelledAt ? "text-rose-500" : undefined}><td className="border-b p-2">{index + 1}</td><td className="border-b p-2">{dateOnlyLabel(a.date)}</td><td className="border-b p-2">{a.startTime} - {a.endTime}</td><td className="border-b p-2">{a.employee?.name || employeeNames}</td><td className="border-b p-2 font-bold">{a.cancelledAt ? "CANCELADO" : statusLabels[a.status] || a.status}</td><td className="border-b p-2 text-right">{money(a.priceOverride ?? order.totalAmount)}</td></tr>)}</tbody>
+        <tbody>{detail.appointments.map((a, index) => <tr key={a.id} className={a.cancelledAt ? "text-rose-500" : undefined}><td className="border-b p-2">{index + 1}</td><td className="border-b p-2">{dateOnlyLabel(a.date)}</td><td className="border-b p-2">{a.startTime} - {a.endTime}</td><td className="border-b p-2">{a.employee?.name || employeeNames}</td><td className="border-b p-2 font-bold">{a.cancelledAt ? "CANCELADO" : statusLabels[a.status] || a.status}</td><td className="border-b p-2 text-right">{money(a.priceOverride ?? detail.totalAmount)}</td></tr>)}</tbody>
       </table>
-      {schedule && <p className="mt-2 text-right text-sm"><b>{nonCancelledCount} atendimento(s) nao cancelado(s)</b> - valor padrao por atendimento {money(order.totalAmount)} - <b>Total da recorrencia: {money(recurrenceTotal)}</b></p>}
+      {schedule && <p className="mt-2 text-right text-sm"><b>{nonCancelledCount} atendimento(s) nao cancelado(s)</b> - valor padrao por atendimento {money(detail.totalAmount)} - <b>Total da recorrencia: {money(recurrenceTotal)}</b></p>}
     </section>}
 
-    {order.notes && <section className="mt-4"><h3 className="text-xs font-black uppercase text-slate-400">Observacoes</h3><p className="mt-2 min-h-16 rounded-xl bg-slate-50 p-4 text-sm">{order.notes}</p></section>}
+    {detail.notes && <section className="mt-4"><h3 className="text-xs font-black uppercase text-slate-400">Observacoes</h3><p className="mt-2 min-h-16 rounded-xl bg-slate-50 p-4 text-sm">{detail.notes}</p></section>}
 
     <div className="signature-block mt-16 grid grid-cols-2 gap-12 text-center">
-      <div className="border-t pt-3">Assinatura do cliente<br />{order.signatureName || order.client?.name}</div>
+      <div className="border-t pt-3">Assinatura do cliente<br />{detail.signatureName || detail.client?.name}</div>
       <div className="border-t pt-3">Assinatura do responsavel<br />LeeveLimpeza</div>
     </div>
 
     <div className="no-print mt-8 flex flex-wrap gap-3">
-      <button onClick={() => printOrderPdf(order)} className="rounded-xl bg-indigo-600 px-4 py-2 font-black text-white">Imprimir</button>
-      <button onClick={() => downloadOrderPdf(order)} className="rounded-xl border border-indigo-300 px-4 py-2 font-black text-indigo-600">Baixar PDF</button>
+      <button onClick={() => printOrderPdf(detail)} className="rounded-xl bg-indigo-600 px-4 py-2 font-black text-white">Imprimir</button>
+      <button onClick={() => downloadOrderPdf(detail)} className="rounded-xl border border-indigo-300 px-4 py-2 font-black text-indigo-600">Baixar PDF</button>
       <button onClick={() => setSending("email")} className="rounded-xl border border-emerald-300 px-4 py-2 font-black text-emerald-600">Enviar por e-mail</button>
       <button onClick={() => setSending("whatsapp")} className="rounded-xl border border-emerald-300 px-4 py-2 font-black text-emerald-600">Enviar pelo WhatsApp</button>
     </div>
-  </div></Modal>{sending && <SendOrderModal order={order} channel={sending} onClose={() => setSending(null)} />}</>;
+  </div></Modal>{sending && <SendOrderModal order={detail} channel={sending} onClose={() => setSending(null)} />}</>;
 }
 
 type CalendarAppointment = { id: string; date: string; startTime: string; endTime: string; status: string; cancelledAt?: string | null; employee?: { name: string } | null; branch?: { name: string } | null; order: { id: string; code: string; client?: { name: string }; items: OrderItem[] } };
@@ -1338,11 +1553,11 @@ type CalendarAppointment = { id: string; date: string; startTime: string; endTim
 // parent shell instead of re-fetching - editing there and saving refreshes
 // both the parent's `orders` list and this view's own /api/calendar data
 // (see reloadCalendar below), without ever leaving this tab.
-function CalendarView({ branchId, employees, clients, services, orders, reload, onOrderSaved, onEditClient }: { branchId: string | null; employees: Employee[]; clients: Client[]; services: Service[]; orders: Order[]; reload: () => Promise<void>; onOrderSaved: (order: Order) => Promise<void>; onEditClient?: (clientId: string) => void }) {
+function CalendarView({ branchId, employees, clients, services, orders, reload, onOrderSaved, onEditClient, orderDetailCache }: { branchId: string | null; employees: Employee[]; clients: Client[]; services: Service[]; orders: OrderSummary[]; reload: () => Promise<void>; onOrderSaved: (order: Order) => Promise<void>; onEditClient?: (clientId: string) => void; orderDetailCache: OrderDetailCache<Order> }) {
   const [cursor, setCursor] = useState(new Date());
   const [appointments, setAppointments] = useState<CalendarAppointment[]>([]);
   const [selectedDay, setSelectedDay] = useState<number | null>(new Date().getDate());
-  const [editingOrder, setEditingOrder] = useState<Order | null>(null);
+  const [editingOrder, setEditingOrder] = useState<OrderSummary | null>(null);
   const y = cursor.getFullYear(); const m = cursor.getMonth();
   const days = useMemo(() => [...Array(new Date(y, m, 1).getDay()).fill(null), ...Array.from({ length: new Date(y, m + 1, 0).getDate() }, (_, i) => i + 1)], [y, m]);
 
@@ -1408,7 +1623,7 @@ function CalendarView({ branchId, employees, clients, services, orders, reload, 
       <div className="overflow-hidden rounded-2xl border bg-white lg:col-span-2"><div className="overflow-x-auto"><div className="min-w-full sm:min-w-[640px] lg:min-w-0"><div className="grid grid-cols-7 bg-slate-50 text-center text-xs font-black uppercase text-slate-500">{["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sab"].map((x) => <div key={x} className="py-3">{x}</div>)}</div><div className="grid grid-cols-7 auto-rows-[70px] sm:auto-rows-[90px] lg:auto-rows-[110px]">{days.map((d, i) => <button type="button" key={i} disabled={!d} onClick={() => d && setSelectedDay(d)} className={`border-t border-r p-2 text-left ${d === selectedDay ? "bg-indigo-50" : ""}`}>{d && <><b className="text-xs">{d}</b><div className="mt-2 space-y-1">{byDay(d).slice(0, 3).map((a) => <div key={a.id} className="truncate rounded-lg bg-indigo-100 p-1 text-[10px] font-bold text-indigo-700">{a.startTime} {a.order.client?.name}</div>)}{byDay(d).length > 3 && <p className="text-[10px] font-bold text-slate-400">+{byDay(d).length - 3}</p>}</div></>}</button>)}</div></div></div></div>
       <div className="rounded-2xl border bg-white p-5 lg:col-span-3"><h4 className="font-black capitalize">Atendimentos - {selectedLabel}{selectedDay !== null && <span className="font-bold normal-case text-slate-500"> · {selectedAppointments.length} atendimento{selectedAppointments.length === 1 ? "" : "s"}</span>}</h4>{selectedAppointments.length === 0 && <p className="mt-4 text-sm text-slate-500">Nenhum atendimento neste dia.</p>}<div className="mt-4 space-y-3">{selectedAppointments.map((a) => <button type="button" key={a.id} onClick={() => openAppointment(a)} className="w-full rounded-xl border p-3 text-left hover:border-indigo-300 hover:bg-indigo-50/40"><div className="flex items-center justify-between"><b className="text-sm">{a.startTime} - {a.endTime}</b><Badge status={a.status} cancelledAt={a.cancelledAt} /></div><p className="mt-1 text-sm font-bold text-slate-800">{a.order.client?.name}</p><p className="text-xs text-slate-500">{a.order.items[0]?.service?.name}{a.order.items.length > 1 ? ` +${a.order.items.length - 1}` : ""} - OS {a.order.code}</p><p className="text-xs text-slate-500">{a.employee?.name || "Equipe da OS"} - {a.branch?.name}</p></button>)}</div></div>
     </div>
-    {editingOrder && <OrderFormModal order={editingOrder} orders={orders} clients={clients} employees={employees} services={services} branchId={branchId} onClose={() => setEditingOrder(null)} reload={reloadCalendar} onSaved={handleOrderSaved} onEditClient={onEditClient} />}
+    {editingOrder && <OrderFormModal order={editingOrder} orderDetailCache={orderDetailCache} clients={clients} employees={employees} services={services} branchId={branchId} onClose={() => setEditingOrder(null)} reload={reloadCalendar} onSaved={handleOrderSaved} onEditClient={onEditClient} />}
   </div>;
 }
 
@@ -1417,7 +1632,7 @@ function CalendarView({ branchId, employees, clients, services, orders, reload, 
 // CalendarView, cross-referencing the already-loaded `orders` prop instead of
 // a separate fetch, so drilling into a movement always shows the exact same
 // client/service/employees/value/payment-method data as everywhere else.
-function FinanceView({ data, orders, employees, clients, services, branchId, reload, onOrderSaved, loading, onEditClient }: { data: Transaction[]; orders: Order[]; employees: Employee[]; clients: Client[]; services: Service[]; branchId: string | null; reload: () => Promise<void>; onOrderSaved: (order: Order) => Promise<void>; loading: boolean; onEditClient?: (clientId: string) => void }) { const [open, setOpen] = useState(false); const [editing, setEditing] = useState<Transaction | null>(null); const [viewOrder, setViewOrder] = useState<Order | null>(null); const [form, setForm] = useState({ type: "receita", category: "Eventos", description: "", amount: 0, dueDate: dateOnly(), paidAt: null as string | null, status: "pago", orderId: "" }); const [error, setError] = useState("");
+function FinanceView({ data, orders, employees, clients, services, branchId, reload, onOrderSaved, loading, onEditClient, orderDetailCache }: { data: Transaction[]; orders: OrderSummary[]; employees: Employee[]; clients: Client[]; services: Service[]; branchId: string | null; reload: () => Promise<void>; onOrderSaved: (order: Order) => Promise<void>; loading: boolean; onEditClient?: (clientId: string) => void; orderDetailCache: OrderDetailCache<Order> }) { const [open, setOpen] = useState(false); const [editing, setEditing] = useState<Transaction | null>(null); const [viewOrder, setViewOrder] = useState<OrderSummary | null>(null); const [form, setForm] = useState({ type: "receita", category: "Eventos", description: "", amount: 0, dueDate: dateOnly(), paidAt: null as string | null, status: "pago", orderId: "" }); const [error, setError] = useState("");
   // Memoized so typing in the "Novo lancamento" form (local state in this
   // same component) doesn't force a full O(n) re-scan of every transaction
   // on each keystroke - only recomputed when the transaction list itself changes.
@@ -1425,5 +1640,5 @@ function FinanceView({ data, orders, employees, clients, services, branchId, rel
   // O(1) lookup per row instead of orders.find() (O(orders.length)) inside
   // the table map - same Map-lookup pattern already used by CalendarView's byDayMap.
   const ordersById = useMemo(() => new Map(orders.map((o) => [o.id, o])), [orders]);
-  if (loading) return <p className="text-sm text-slate-500">Carregando financeiro...</p>; async function submit(e: FormEvent) { e.preventDefault(); setError(""); try { const base = { ...form, orderId: form.orderId || null, paidAt: form.paidAt || null }; const payload = editing ? base : { ...base, branchId }; await api(editing ? `/api/transactions/${editing.id}` : "/api/transactions", { method: editing ? "PUT" : "POST", body: JSON.stringify(payload) }); setOpen(false); setEditing(null); await reload(); } catch (err) { setError(err instanceof Error ? err.message : "Erro ao salvar lancamento."); } } async function remove(id: string) { if (!confirm("Excluir lancamento?")) return; try { await api(`/api/transactions/${id}`, { method: "DELETE" }); await reload(); } catch (err) { alert(err instanceof Error ? err.message : "Erro ao excluir lancamento."); } } function csv() { const content = ["Data,Tipo,Categoria,Descricao,Valor,Status", ...data.map((t) => `${t.dueDate},${t.type},${t.category},"${t.description}",${t.amount},${t.status}`)].join("\n"); const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([content], { type: "text/csv" })); a.download = "financeiro.csv"; a.click(); } return <div className="space-y-5"><div className="grid gap-4 md:grid-cols-3"><Stat label="Entradas" value={money(totals.revenue)} /><Stat label="Saidas" value={money(totals.expenses)} tone="rose" /><Stat label="Lucro" value={money(totals.revenue - totals.expenses)} tone="emerald" /></div><div className="flex justify-end gap-2"><button onClick={csv} className="rounded-xl border bg-white px-4 py-2 font-bold">Exportar CSV</button><button onClick={() => { setEditing(null); setError(""); setOpen(true); }} className="rounded-xl bg-indigo-600 px-4 py-2 font-black text-white">Novo lancamento</button></div><div className="overflow-x-auto rounded-2xl border bg-white"><table className="w-full text-sm"><thead className="bg-slate-50 text-left text-xs uppercase"><tr><th className="p-4">Data</th><th>Tipo</th><th className="hidden sm:table-cell">Categoria</th><th>Descricao</th><th className="hidden sm:table-cell">OS</th><th className="hidden sm:table-cell">Pagamento</th><th className="text-right">Valor</th><th>Status</th><th className="p-4 text-right">Acoes</th></tr></thead><tbody>{data.map((t) => { const linkedOrder = t.orderId ? ordersById.get(t.orderId) : undefined; return <tr key={t.id} className="border-t"><td className="p-4">{new Date(t.dueDate).toLocaleDateString("pt-BR")}</td><td>{t.type}</td><td className="hidden sm:table-cell">{t.category}</td><td>{t.description}</td><td className="hidden sm:table-cell">{linkedOrder ? <button onClick={() => setViewOrder(linkedOrder)} className="font-mono font-bold text-indigo-600">{linkedOrder.code}</button> : "-"}</td><td className="hidden text-xs sm:table-cell">{linkedOrder ? paymentMethodLabel(linkedOrder) : "-"}</td><td className="text-right font-black">{money(t.amount)}</td><td><Badge status={t.status} /></td><td className="p-4 text-right"><button onClick={() => { setEditing(t); setError(""); setForm({ type: t.type, category: t.category, description: t.description, amount: Number(t.amount), dueDate: dateOnly(t.dueDate), paidAt: t.paidAt ? dateOnly(t.paidAt) : null, status: t.status, orderId: t.orderId || "" }); setOpen(true); }} className="mr-2 font-bold text-indigo-600">Editar</button><button onClick={() => remove(t.id)} className="font-bold text-rose-600">Excluir</button></td></tr>; })}</tbody></table></div>{open && <Modal title="Lancamento financeiro" onClose={() => setOpen(false)}><form onSubmit={submit} className="grid gap-3">{error && <p className="rounded-xl bg-rose-50 p-3 text-sm font-bold text-rose-600">{error}</p>}<Select value={form.type} set={(v) => setForm({ ...form, type: v })} options={[["receita", "Receita"], ["despesa", "Despesa"]]} /><Input label="Categoria" value={form.category} set={(v) => setForm({ ...form, category: v })} /><Input label="Descricao" value={form.description} set={(v) => setForm({ ...form, description: v })} /><NumberInput label="Valor" value={form.amount} set={(v) => setForm({ ...form, amount: v })} /><Input type="date" label="Vencimento" value={form.dueDate} set={(v) => setForm({ ...form, dueDate: v })} /><Select value={form.status} set={(v) => setForm({ ...form, status: v })} options={[["pago", "Pago"], ["pendente", "Pendente"]]} /><Select value={form.orderId} set={(v) => setForm({ ...form, orderId: v })} options={[["", "Sem OS"], ...orders.map((o) => [o.id, o.code])]} /><Save /></form></Modal>}{viewOrder && <OrderFormModal order={viewOrder} orders={orders} clients={clients} employees={employees} services={services} branchId={branchId} onClose={() => setViewOrder(null)} reload={reload} onSaved={onOrderSaved} onEditClient={onEditClient} />}</div>; }
+  if (loading) return <p className="text-sm text-slate-500">Carregando financeiro...</p>; async function submit(e: FormEvent) { e.preventDefault(); setError(""); try { const base = { ...form, orderId: form.orderId || null, paidAt: form.paidAt || null }; const payload = editing ? base : { ...base, branchId }; await api(editing ? `/api/transactions/${editing.id}` : "/api/transactions", { method: editing ? "PUT" : "POST", body: JSON.stringify(payload) }); setOpen(false); setEditing(null); await reload(); } catch (err) { setError(err instanceof Error ? err.message : "Erro ao salvar lancamento."); } } async function remove(id: string) { if (!confirm("Excluir lancamento?")) return; try { await api(`/api/transactions/${id}`, { method: "DELETE" }); await reload(); } catch (err) { alert(err instanceof Error ? err.message : "Erro ao excluir lancamento."); } } function csv() { const content = ["Data,Tipo,Categoria,Descricao,Valor,Status", ...data.map((t) => `${t.dueDate},${t.type},${t.category},"${t.description}",${t.amount},${t.status}`)].join("\n"); const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([content], { type: "text/csv" })); a.download = "financeiro.csv"; a.click(); } return <div className="space-y-5"><div className="grid gap-4 md:grid-cols-3"><Stat label="Entradas" value={money(totals.revenue)} /><Stat label="Saidas" value={money(totals.expenses)} tone="rose" /><Stat label="Lucro" value={money(totals.revenue - totals.expenses)} tone="emerald" /></div><div className="flex justify-end gap-2"><button onClick={csv} className="rounded-xl border bg-white px-4 py-2 font-bold">Exportar CSV</button><button onClick={() => { setEditing(null); setError(""); setOpen(true); }} className="rounded-xl bg-indigo-600 px-4 py-2 font-black text-white">Novo lancamento</button></div><div className="overflow-x-auto rounded-2xl border bg-white"><table className="w-full text-sm"><thead className="bg-slate-50 text-left text-xs uppercase"><tr><th className="p-4">Data</th><th>Tipo</th><th className="hidden sm:table-cell">Categoria</th><th>Descricao</th><th className="hidden sm:table-cell">OS</th><th className="hidden sm:table-cell">Pagamento</th><th className="text-right">Valor</th><th>Status</th><th className="p-4 text-right">Acoes</th></tr></thead><tbody>{data.map((t) => { const linkedOrder = t.orderId ? ordersById.get(t.orderId) : undefined; return <tr key={t.id} className="border-t"><td className="p-4">{new Date(t.dueDate).toLocaleDateString("pt-BR")}</td><td>{t.type}</td><td className="hidden sm:table-cell">{t.category}</td><td>{t.description}</td><td className="hidden sm:table-cell">{linkedOrder ? <button onClick={() => setViewOrder(linkedOrder)} className="font-mono font-bold text-indigo-600">{linkedOrder.code}</button> : "-"}</td><td className="hidden text-xs sm:table-cell">{linkedOrder ? paymentMethodLabel(linkedOrder) : "-"}</td><td className="text-right font-black">{money(t.amount)}</td><td><Badge status={t.status} /></td><td className="p-4 text-right"><button onClick={() => { setEditing(t); setError(""); setForm({ type: t.type, category: t.category, description: t.description, amount: Number(t.amount), dueDate: dateOnly(t.dueDate), paidAt: t.paidAt ? dateOnly(t.paidAt) : null, status: t.status, orderId: t.orderId || "" }); setOpen(true); }} className="mr-2 font-bold text-indigo-600">Editar</button><button onClick={() => remove(t.id)} className="font-bold text-rose-600">Excluir</button></td></tr>; })}</tbody></table></div>{open && <Modal title="Lancamento financeiro" onClose={() => setOpen(false)}><form onSubmit={submit} className="grid gap-3">{error && <p className="rounded-xl bg-rose-50 p-3 text-sm font-bold text-rose-600">{error}</p>}<Select value={form.type} set={(v) => setForm({ ...form, type: v })} options={[["receita", "Receita"], ["despesa", "Despesa"]]} /><Input label="Categoria" value={form.category} set={(v) => setForm({ ...form, category: v })} /><Input label="Descricao" value={form.description} set={(v) => setForm({ ...form, description: v })} /><NumberInput label="Valor" value={form.amount} set={(v) => setForm({ ...form, amount: v })} /><Input type="date" label="Vencimento" value={form.dueDate} set={(v) => setForm({ ...form, dueDate: v })} /><Select value={form.status} set={(v) => setForm({ ...form, status: v })} options={[["pago", "Pago"], ["pendente", "Pendente"]]} /><Select value={form.orderId} set={(v) => setForm({ ...form, orderId: v })} options={[["", "Sem OS"], ...orders.map((o) => [o.id, o.code])]} /><Save /></form></Modal>}{viewOrder && <OrderFormModal order={viewOrder} orderDetailCache={orderDetailCache} clients={clients} employees={employees} services={services} branchId={branchId} onClose={() => setViewOrder(null)} reload={reload} onSaved={onOrderSaved} onEditClient={onEditClient} />}</div>; }
 

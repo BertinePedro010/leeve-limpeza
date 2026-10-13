@@ -22,9 +22,12 @@ export async function GET(request: Request) {
         // are never part of "Todos"/Agendado/Realizado here - see
         // lib/order-status.ts.
         cancelledAt: null,
+        // A soft-deleted OS (deletedAt set) must not linger in this report,
+        // same rule app/api/calendar and app/api/dashboard already enforce -
+        // see SECURITY-AUDIT finding F3.
+        order: { deletedAt: null, ...(serviceId ? { items: { some: { serviceId } } } : {}) },
         ...(employeeId ? { employeeId } : {}),
         ...(status ? { status: status as never } : {}),
-        ...(serviceId ? { order: { items: { some: { serviceId } } } } : {}),
       },
       include: {
         // ReportsView only ever reads order.items[0]?.service?.name - the

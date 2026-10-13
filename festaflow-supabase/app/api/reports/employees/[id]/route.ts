@@ -50,7 +50,14 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
 
     return ok(
       serialize({
-        employee: { id: employee.id, name: employee.name, role: employee.role },
+        // `active` is intentionally the only deletedAt-derived field exposed
+        // here - this report deliberately stays reachable by id for a
+        // deactivated employee (historical "servicos prestados" is a
+        // legitimate, preserved use case - see SECURITY-AUDIT finding F6),
+        // it just must no longer leave that fact implicit so a report
+        // consumer can tell a departed employee's history apart from an
+        // active one's.
+        employee: { id: employee.id, name: employee.name, role: employee.role, active: employee.deletedAt === null },
         period: { from, to },
         summary,
         appointments,

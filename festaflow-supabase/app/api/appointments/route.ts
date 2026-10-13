@@ -50,7 +50,7 @@ export async function POST(request: Request) {
 
     if (employeeId) {
       const employee = await prisma.employee.findUnique({ where: { id: employeeId } });
-      if (!employee || employee.branchId !== order.branchId) {
+      if (!employee || employee.branchId !== order.branchId || employee.deletedAt) {
         throw new AuthzError("Funcionario nao pertence a filial da OS.", 422);
       }
     }

@@ -15,7 +15,10 @@ export async function GET(request: Request) {
     // lib/order-status.ts) - a NULL cancelledAt never matches this range
     // comparison, so this already implicitly excludes non-cancelled rows.
     const cancelled = await prisma.appointment.findMany({
-      where: { branchId: branchFilter, cancelledAt: { gte: from, lte: to } },
+      // A soft-deleted OS (deletedAt set) must not linger in this report,
+      // same rule app/api/calendar and app/api/dashboard already enforce -
+      // see SECURITY-AUDIT finding F3.
+      where: { branchId: branchFilter, cancelledAt: { gte: from, lte: to }, order: { deletedAt: null } },
       include: {
         order: { select: { code: true, cancelledAt: true, client: { select: { name: true } } } },
         employee: { select: { name: true } },

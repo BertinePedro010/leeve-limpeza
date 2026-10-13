@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/prisma";
-import { requireAuth, requireModule, assertRecordBranchAccess, handleAuthzError } from "@/lib/authz";
+import { requireAuth, requireModule, assertRecordBranchAccess, AuthzError, handleAuthzError } from "@/lib/authz";
 import { ok, serialize } from "@/lib/json";
 import { sendAppointmentCompletedEmail } from "@/lib/email";
 import { syncOrderBilling } from "@/lib/billing";
@@ -18,6 +18,15 @@ export async function POST(_request: Request, { params }: { params: Promise<{ id
     const { id } = await params;
     const existing = await prisma.appointment.findUnique({ where: { id } });
     assertRecordBranchAccess(auth, existing, "Atendimento nao encontrado.");
+    // Cancellation is terminal (see PUT /api/appointments/[id]'s own guard) -
+    // this is the sibling mutation that was missing it (SECURITY-AUDIT F4).
+    // No reactivation flow exists or is being added: once cancelled, an
+    // appointment can never become realizado, full stop. Checked before the
+    // transaction so a cancelled row never even reaches the billing-sync
+    // path, and the completion e-mail below is never sent for it.
+    if (existing.cancelledAt) {
+      throw new AuthzError("Nao e possivel concluir um atendimento cancelado.", 422);
+    }
 
     const appointment = await prisma.$transaction(async (tx) => {
       const updated = await tx.appointment.update({

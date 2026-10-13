@@ -69,10 +69,10 @@ async function assertSameBranchRelations(
   if (!client || client.branchId !== branchId || client.deletedAt) {
     throw new AuthzError("Cliente nao pertence a filial da OS.", 422);
   }
-  if (services.length !== serviceIds.length || services.some((s) => s.branchId !== branchId)) {
+  if (services.length !== serviceIds.length || services.some((s) => s.branchId !== branchId || s.deletedAt)) {
     throw new AuthzError("Um ou mais servicos nao pertencem a filial da OS.", 422);
   }
-  if (employees.length !== employeeIds.length || employees.some((e) => e.branchId !== branchId)) {
+  if (employees.length !== employeeIds.length || employees.some((e) => e.branchId !== branchId || e.deletedAt)) {
     throw new AuthzError("Um ou mais funcionarios nao pertencem a filial da OS.", 422);
   }
   return client;

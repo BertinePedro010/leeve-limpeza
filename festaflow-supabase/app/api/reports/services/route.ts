@@ -18,6 +18,10 @@ export async function GET(request: Request) {
       where: {
         service: { branchId: branchFilter, ...(serviceId ? { id: serviceId } : {}) },
         order: {
+          // A soft-deleted OS (deletedAt set) must not linger in this
+          // report, same rule app/api/calendar and app/api/dashboard
+          // already enforce - see SECURITY-AUDIT finding F3.
+          deletedAt: null,
           appointments: {
             some: {
               date: { gte: from, lte: to },

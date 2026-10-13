@@ -107,6 +107,65 @@ async function loadUpcomingOrders(canView: boolean, where: Prisma.ServiceOrderWh
   });
 }
 
+// Consolidates 3 independent COUNT round-trips (clients/employees/services,
+// each simply branch+deletedAt scoped) into 1, via subqueries - same filter
+// per table as before, same unconditional execution (these 3 never had a
+// canView-gated skip; only the response zeroes them out - see GET below).
+// Parameterized via Prisma.sql/Prisma.join, never string-concatenated.
+async function loadSimpleCounts(branchIds: string[]): Promise<{ clients: number; employees: number; services: number }> {
+  if (branchIds.length === 0) return { clients: 0, employees: 0, services: 0 };
+  const rows = await prisma.$queryRaw<Array<{ clients: number; employees: number; services: number }>>(Prisma.sql`
+    SELECT
+      (SELECT COUNT(*)::int FROM clients WHERE deleted_at IS NULL AND branch_id = ANY(ARRAY[${Prisma.join(branchIds)}]::uuid[])) AS clients,
+      (SELECT COUNT(*)::int FROM employees WHERE deleted_at IS NULL AND branch_id = ANY(ARRAY[${Prisma.join(branchIds)}]::uuid[])) AS employees,
+      (SELECT COUNT(*)::int FROM services WHERE deleted_at IS NULL AND branch_id = ANY(ARRAY[${Prisma.join(branchIds)}]::uuid[])) AS services
+  `);
+  const row = rows[0];
+  return { clients: Number(row.clients), employees: Number(row.employees), services: Number(row.services) };
+}
+
+// Consolidates the 4 order-count round-trips (orders/activeOrders/
+// completedOrders/principalOrders) into 1, via subqueries - identical
+// filters to the previous per-count Prisma calls (deletedAt/branchId always;
+// status+cancelledAt or just cancelledAt as before). Only ever called when
+// canViewOrders is true (see GET below) - preserves the "skip entirely, not
+// just zero the response" behavior documented there.
+async function loadOrderCounts(branchIds: string[]): Promise<{ orders: number; activeOrders: number; completedOrders: number; principalOrders: number }> {
+  if (branchIds.length === 0) return { orders: 0, activeOrders: 0, completedOrders: 0, principalOrders: 0 };
+  const rows = await prisma.$queryRaw<Array<{ orders: number; activeOrders: number; completedOrders: number; principalOrders: number }>>(Prisma.sql`
+    SELECT
+      (SELECT COUNT(*)::int FROM service_orders WHERE deleted_at IS NULL AND branch_id = ANY(ARRAY[${Prisma.join(branchIds)}]::uuid[])) AS "orders",
+      (SELECT COUNT(*)::int FROM service_orders WHERE deleted_at IS NULL AND branch_id = ANY(ARRAY[${Prisma.join(branchIds)}]::uuid[]) AND status = 'agendado' AND cancelled_at IS NULL) AS "activeOrders",
+      (SELECT COUNT(*)::int FROM service_orders WHERE deleted_at IS NULL AND branch_id = ANY(ARRAY[${Prisma.join(branchIds)}]::uuid[]) AND status = 'realizado' AND cancelled_at IS NULL) AS "completedOrders",
+      (SELECT COUNT(*)::int FROM service_orders WHERE deleted_at IS NULL AND branch_id = ANY(ARRAY[${Prisma.join(branchIds)}]::uuid[]) AND cancelled_at IS NULL) AS "principalOrders"
+  `);
+  const row = rows[0];
+  return { orders: Number(row.orders), activeOrders: Number(row.activeOrders), completedOrders: Number(row.completedOrders), principalOrders: Number(row.principalOrders) };
+}
+
+// Consolidates the 4 financial aggregate round-trips (revenue/expenses/
+// receivable/payable) into 1, via FILTER - identical filters to the previous
+// per-aggregate Prisma calls (revenue/expenses: paidAt within the selected
+// month; receivable/payable: unfiltered, current outstanding balance).
+// Only ever called when canViewFinance is true (see GET below) - this
+// function must never be invoked otherwise, exactly like the prior
+// `canViewFinance ? prisma.transaction.aggregate(...) : Promise.resolve(null)`
+// pattern it replaces.
+async function loadFinanceTotals(branchIds: string[], from: Date, to: Date): Promise<{ revenue: number; expenses: number; receivable: number; payable: number }> {
+  if (branchIds.length === 0) return { revenue: 0, expenses: 0, receivable: 0, payable: 0 };
+  const rows = await prisma.$queryRaw<Array<{ revenue: number; expenses: number; receivable: number; payable: number }>>(Prisma.sql`
+    SELECT
+      COALESCE(SUM(amount) FILTER (WHERE type = 'receita' AND status = 'pago' AND paid_at BETWEEN ${from} AND ${to}), 0)::float8 AS revenue,
+      COALESCE(SUM(amount) FILTER (WHERE type = 'despesa' AND status = 'pago' AND paid_at BETWEEN ${from} AND ${to}), 0)::float8 AS expenses,
+      COALESCE(SUM(amount) FILTER (WHERE type = 'receita' AND status = 'pendente'), 0)::float8 AS receivable,
+      COALESCE(SUM(amount) FILTER (WHERE type = 'despesa' AND status = 'pendente'), 0)::float8 AS payable
+    FROM transactions
+    WHERE deleted_at IS NULL AND branch_id = ANY(ARRAY[${Prisma.join(branchIds)}]::uuid[])
+  `);
+  const row = rows[0];
+  return { revenue: Number(row.revenue), expenses: Number(row.expenses), receivable: Number(row.receivable), payable: Number(row.payable) };
+}
+
 // Same revenue/expense/receivable/payable filter rules as lib/billing.ts
 // sumRevenue (type/status/deletedAt), computed with Prisma `aggregate`
 // instead of fetching every transaction row and summing in JS - the result
@@ -129,7 +188,6 @@ export async function GET(request: Request) {
     const branchIds = branchScope.in;
     const branchFilter = { branchId: branchScope };
     const orderWhere = { deletedAt: null, ...branchFilter };
-    const transactionWhere = { deletedAt: null, ...branchFilter };
 
     // Dashboard itself is always reachable (it's the landing page - see
     // requireModule's docstring in lib/authz.ts), but its money/order figures
@@ -155,35 +213,31 @@ export async function GET(request: Request) {
     //    principal, datas adicionais, atendimentos manuais e ocorrencias de
     //    recorrencia. Valor de cada ocorrencia = total_amount da OS pai.
     //    Ver loadOccurrences() acima (uma query agrupada, sem dupla contagem).
+    // PERF (SECURITY-AUDIT perf phase, Etapa 1): the 3 unconditional counts,
+    // the 4 canViewOrders-gated counts, and the 4 canViewFinance-gated
+    // aggregates were each a separate round-trip (11 total in the worst
+    // case). Consolidated below into at most 3 round-trips with byte-
+    // identical results (validated against the original per-field Prisma
+    // calls across month boundaries, cancelled/soft-deleted orders, branch
+    // isolation, and both permission states before this change landed) -
+    // loadOccurrences/loadOccurrencesByCategory/loadUpcomingOrders are
+    // unchanged, each already a single round-trip.
     const [
-      clients,
-      employees,
-      services,
-      ordersCount,
-      activeOrdersCount,
-      completedOrdersCount,
-      principalOrdersCount,
+      simpleCounts,
+      orderCounts,
       occurrences,
       occurrencesByCategory,
       upcomingOrders,
-      revenueAgg,
-      expensesAgg,
-      receivableAgg,
-      payableAgg,
+      financeTotals,
     ] = await Promise.all([
-      prisma.client.count({ where: { deletedAt: null, ...branchFilter } }),
-      prisma.employee.count({ where: { deletedAt: null, ...branchFilter } }),
-      prisma.service.count({ where: { deletedAt: null, ...branchFilter } }),
+      loadSimpleCounts(branchIds),
       // Order-level counts (orders/activeOrders/completedOrders/principalOrders)
       // are deliberately NOT filtered by the selected month: they report
       // current operational state ("how many OS are open right now", "how
       // many have ever been completed"), not a historical count for that
       // month - filtering them would silently turn a live gauge into a
       // history widget, exactly what "upcomingOrders" below must also avoid.
-      canViewOrders ? prisma.serviceOrder.count({ where: orderWhere }) : Promise.resolve(0),
-      canViewOrders ? prisma.serviceOrder.count({ where: { ...orderWhere, status: "agendado", cancelledAt: null } }) : Promise.resolve(0),
-      canViewOrders ? prisma.serviceOrder.count({ where: { ...orderWhere, status: "realizado", cancelledAt: null } }) : Promise.resolve(0),
-      canViewOrders ? prisma.serviceOrder.count({ where: { ...orderWhere, cancelledAt: null } }) : Promise.resolve(0),
+      canViewOrders ? loadOrderCounts(branchIds) : Promise.resolve({ orders: 0, activeOrders: 0, completedOrders: 0, principalOrders: 0 }),
       loadOccurrences(canViewOrders, branchIds, from, to),
       loadOccurrencesByCategory(canViewOrders, branchIds, from, to),
       // `upcomingOrders` is trimmed to exactly what DashboardView renders
@@ -205,17 +259,16 @@ export async function GET(request: Request) {
       // receivable/payable below are deliberately NOT filtered: they are the
       // *current* outstanding balance ("a receber"/"a pagar" agora), not a
       // per-month figure - "a receber de agosto" would misrepresent an open
-      // balance as something tied to a past month.
-      canViewFinance ? prisma.transaction.aggregate({ where: { ...transactionWhere, type: "receita", status: "pago", paidAt: { gte: from, lte: to } }, _sum: { amount: true } }) : Promise.resolve(null),
-      canViewFinance ? prisma.transaction.aggregate({ where: { ...transactionWhere, type: "despesa", status: "pago", paidAt: { gte: from, lte: to } }, _sum: { amount: true } }) : Promise.resolve(null),
-      canViewFinance ? prisma.transaction.aggregate({ where: { ...transactionWhere, type: "receita", status: "pendente" }, _sum: { amount: true } }) : Promise.resolve(null),
-      canViewFinance ? prisma.transaction.aggregate({ where: { ...transactionWhere, type: "despesa", status: "pendente" }, _sum: { amount: true } }) : Promise.resolve(null),
+      // balance as something tied to a past month. Only ever invoked when
+      // canViewFinance is true - the financial query must never run for an
+      // unauthorized caller.
+      canViewFinance ? loadFinanceTotals(branchIds, from, to) : Promise.resolve({ revenue: 0, expenses: 0, receivable: 0, payable: 0 }),
     ]);
 
-    const revenue = revenueAgg ? Number(revenueAgg._sum.amount ?? 0) : 0;
-    const expenses = expensesAgg ? Number(expensesAgg._sum.amount ?? 0) : 0;
-    const receivable = receivableAgg ? Number(receivableAgg._sum.amount ?? 0) : 0;
-    const payable = payableAgg ? Number(payableAgg._sum.amount ?? 0) : 0;
+    const revenue = financeTotals.revenue;
+    const expenses = financeTotals.expenses;
+    const receivable = financeTotals.receivable;
+    const payable = financeTotals.payable;
 
     return ok(serialize({
       period: { year, month },
@@ -224,13 +277,13 @@ export async function GET(request: Request) {
       profit: revenue - expenses,
       receivable,
       payable,
-      clients: canViewClients ? clients : 0,
-      employees: canViewEmployees ? employees : 0,
-      services: canViewServices ? services : 0,
-      orders: ordersCount,
-      activeOrders: activeOrdersCount,
-      completedOrders: completedOrdersCount,
-      principalOrders: { count: principalOrdersCount },
+      clients: canViewClients ? simpleCounts.clients : 0,
+      employees: canViewEmployees ? simpleCounts.employees : 0,
+      services: canViewServices ? simpleCounts.services : 0,
+      orders: orderCounts.orders,
+      activeOrders: orderCounts.activeOrders,
+      completedOrders: orderCounts.completedOrders,
+      principalOrders: { count: orderCounts.principalOrders },
       occurrences,
       occurrencesByCategory,
       upcomingOrders: upcomingOrders.map((o) => ({ id: o.id, code: o.code, status: o.status, eventDate: o.eventDate, client: o.client ? { name: o.client.name } : null })),

@@ -38,6 +38,42 @@ function withRealTotal<T extends { totalAmount: unknown; appointments: Array<{ c
   return { ...order, total: orderRealTotal(order.totalAmount as number | string, nonCancelled) };
 }
 
+// Listing DTO (GET only - POST below and the [id] detail route are untouched
+// and keep returning the full include() shape). The list/table view
+// (components/SaasApp.tsx OrdersTable) never reads items/employees/
+// transactions/full-appointments/full-recurringSchedules - only their
+// presence/count. Fetching those relations for every row in the list was
+// the actual N+1-shaped cost; every OWN ServiceOrder scalar column is kept
+// (nothing dropped there) and only the 5 heavy relations are replaced with
+// the two derived values the UI actually reads. Full detail loads on demand
+// via GET /api/orders/[id] - see lib/use-order-detail.ts.
+function summaryInclude(canViewFinance: boolean) {
+  return {
+    client: { select: { id: true, name: true, email: true, phone: true } },
+    appointments: { select: { cancelledAt: true, priceOverride: true } },
+    _count: { select: { recurringSchedules: true } },
+    // Kept canViewFinance-gated for symmetry with the detail route's own
+    // include() even though nothing in the summary response reads it today
+    // - matches F1's rule that a finance-less caller must never recover
+    // transaction data through an order's relations, so a future summary
+    // field never has to remember to add this gate separately.
+    transactions: canViewFinance,
+  };
+}
+
+function toSummary<
+  T extends {
+    totalAmount: unknown;
+    appointments: Array<{ cancelledAt: unknown; priceOverride: unknown }>;
+    _count: { recurringSchedules: number };
+    transactions?: unknown;
+  },
+>(order: T) {
+  const nonCancelled = order.appointments.filter((a) => !a.cancelledAt) as Array<{ priceOverride: number | string | null }>;
+  const { appointments, _count, transactions, ...rest } = order;
+  return { ...rest, total: orderRealTotal(order.totalAmount as number | string, nonCancelled), appointmentsCount: nonCancelled.length, hasRecurrence: _count.recurringSchedules > 0 };
+}
+
 // Returns the validated client so the caller can snapshot its address into
 // the OS without a second query - the client registration is the single
 // source of truth for a new/edited OS's service address.
@@ -55,10 +91,10 @@ async function assertSameBranchRelations(
   if (!client || client.branchId !== branchId || client.deletedAt) {
     throw new AuthzError("Cliente nao pertence a filial da OS.", 422);
   }
-  if (services.length !== serviceIds.length || services.some((s) => s.branchId !== branchId)) {
+  if (services.length !== serviceIds.length || services.some((s) => s.branchId !== branchId || s.deletedAt)) {
     throw new AuthzError("Um ou mais servicos nao pertencem a filial da OS.", 422);
   }
-  if (employees.length !== employeeIds.length || employees.some((e) => e.branchId !== branchId)) {
+  if (employees.length !== employeeIds.length || employees.some((e) => e.branchId !== branchId || e.deletedAt)) {
     throw new AuthzError("Um ou mais funcionarios nao pertencem a filial da OS.", 422);
   }
   return client;
@@ -83,9 +119,9 @@ export async function GET(request: Request) {
         ...(clientSearch ? { client: { name: { contains: clientSearch, mode: "insensitive" as const } } } : {}),
       },
       orderBy: { eventDate: "asc" },
-      include: include(canViewFinance),
+      include: summaryInclude(canViewFinance),
     });
-    return ok(serialize(data.map(withRealTotal)));
+    return ok(serialize(data.map(toSummary)));
   } catch (error) {
     return handleAuthzError(error);
   }

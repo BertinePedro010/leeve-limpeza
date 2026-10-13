@@ -55,6 +55,11 @@ async function main() {
   // inteira e vendo clients-crud/idor falharem só depois que auth.spec.ts
   // logava de novo como "operador". Isolar a conta elimina a interferência.
   const authTestId = await ensureAuthUser("authtest@teste.local", "TesteAudit123!");
+  // Conta deliberadamente com allowedModules=["reports"] e SEM "finance" -
+  // fixture para o teste de regressão de SECURITY-AUDIT finding F1
+  // (tests/e2e/security-audit-fixes.spec.ts): confirma que "reports" por si
+  // só nunca concede acesso a faturamento/valores financeiros.
+  const relatoriosId = await ensureAuthUser("relatorios@teste.local", "TesteAudit123!");
   // Conta de desenvolvedor para os testes do painel /dev (tests/e2e/dev-
   // system-lock.spec.ts). Deliberadamente SEM Profile - o fluxo de
   // desenvolvedor (lib/dev-auth.ts) nunca depende de profiles. Esse spec só
@@ -82,6 +87,11 @@ async function main() {
     update: {},
     create: { id: authTestId, name: "Auth Test", email: "authtest@teste.local", role: "operador", allowedModules: ["clients", "employees", "services", "orders", "calendar", "finance", "reports"] },
   });
+  const relatoriosProfile = await prisma.profile.upsert({
+    where: { id: relatoriosId },
+    update: {},
+    create: { id: relatoriosId, name: "Relatorios Teste", email: "relatorios@teste.local", role: "operador", allowedModules: ["reports"] },
+  });
 
   // Admin com acesso a TODAS as filiais ativas (inclusive as 3 "legadas" que
   // já vêm inseridas pelas próprias migrations - ver migration
@@ -95,6 +105,7 @@ async function main() {
   await prisma.userBranch.upsert({ where: { userId_branchId: { userId: operadorProfile.id, branchId: branchA.id } }, update: {}, create: { userId: operadorProfile.id, branchId: branchA.id } });
   await prisma.userBranch.upsert({ where: { userId_branchId: { userId: authTestProfile.id, branchId: branchA.id } }, update: {}, create: { userId: authTestProfile.id, branchId: branchA.id } });
   await prisma.userBranch.upsert({ where: { userId_branchId: { userId: funcionarioProfile.id, branchId: branchA.id } }, update: {}, create: { userId: funcionarioProfile.id, branchId: branchA.id } });
+  await prisma.userBranch.upsert({ where: { userId_branchId: { userId: relatoriosProfile.id, branchId: branchA.id } }, update: {}, create: { userId: relatoriosProfile.id, branchId: branchA.id } });
 
   // Clientes PF e PJ, incluindo acentos/caracteres especiais e um caso de
   // "mesmo documento, nomes diferentes" (regra de dedupe é por filial+nome).
@@ -289,7 +300,7 @@ async function main() {
 
   console.log("Seed de teste concluído:", {
     branches: [branchA.name, branchB.name],
-    users: { admin: "admin@teste.local", operador: "operador@teste.local", funcionario: "funcionario@teste.local", senha: "TesteAudit123!" },
+    users: { admin: "admin@teste.local", operador: "operador@teste.local", funcionario: "funcionario@teste.local", relatorios: "relatorios@teste.local", senha: "TesteAudit123!" },
   });
   console.log(`Conta de desenvolvedor (dev@teste.local) UUID: ${devId} - copie este valor para DEVELOPER_USER_ID em .env.test antes de rodar tests/e2e/dev-system-lock.spec.ts`);
 }

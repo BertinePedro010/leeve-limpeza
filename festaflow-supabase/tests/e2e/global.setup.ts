@@ -26,3 +26,10 @@ setup("autenticar funcionario", async ({ page }) => {
   await loginAs(page, "funcionario@teste.local");
   await page.context().storageState({ path: path.join(AUTH_DIR, "funcionario.json") });
 });
+
+// allowedModules=["reports"], sem "finance" - usada por
+// tests/e2e/security-audit-fixes.spec.ts (SECURITY-AUDIT finding F1).
+setup("autenticar relatorios", async ({ page }) => {
+  await loginAs(page, "relatorios@teste.local");
+  await page.context().storageState({ path: path.join(AUTH_DIR, "relatorios.json") });
+});
